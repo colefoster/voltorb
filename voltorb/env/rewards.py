@@ -8,6 +8,7 @@ from __future__ import annotations
 import math
 
 N_SPECIES = 151
+PLAYFIELD_HEIGHT = 172.0  # max observed ball_y; see tools/validate.py
 
 
 def _dex_caught(pokedex) -> int:
@@ -26,14 +27,34 @@ class Reward:
 
 
 class SurviveReward(Reward):
-    """Stage 1: keep the ball alive. Dense, and teaches flipper control only."""
+    """Stage 1: keep the ball alive.
 
-    def __init__(self, alive_bonus: float = 0.01, ball_lost_penalty: float = 1.0):
-        self.alive_bonus = alive_bonus
+    A constant per-frame alive bonus does NOT work here, and the first 50M-step run proved
+    it: a reward identical in every state and for every action makes the critic learn a
+    constant, advantages collapse to ~1% of return scale, and the entropy bonus pins the
+    policy at uniform random forever. Measured: advantage_std 0.13 vs return_mean 8.15,
+    explained_variance 0.955, clipfrac 0.000 for all 6,103 updates.
+
+    So the signal has to vary with state. Ball height does: the ball is lost at the bottom,
+    so "keep it high" is dense, action-sensitive, and points the same direction as survival.
+    """
+
+    def __init__(
+        self,
+        ball_lost_penalty: float = 1.0,
+        height_weight: float = 0.01,
+        alive_bonus: float = 0.0,
+    ):
         self.ball_lost_penalty = ball_lost_penalty
+        self.height_weight = height_weight
+        self.alive_bonus = alive_bonus
 
     def step(self, raw, gw, *, ball_lost: bool) -> float:
-        return self.alive_bonus - (self.ball_lost_penalty if ball_lost else 0.0)
+        height = 1.0 - min(raw["ball_y"], PLAYFIELD_HEIGHT) / PLAYFIELD_HEIGHT
+        reward = self.alive_bonus + self.height_weight * height
+        if ball_lost:
+            reward -= self.ball_lost_penalty
+        return reward
 
 
 class ScoreReward(SurviveReward):

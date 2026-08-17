@@ -122,7 +122,10 @@ def parse_args():
     p.add_argument("--gamma", type=float, default=0.999, help="high: a ball lasts ~4k frames")
     p.add_argument("--gae-lambda", type=float, default=0.95)
     p.add_argument("--clip-coef", type=float, default=0.2)
-    p.add_argument("--ent-coef", type=float, default=0.01)
+    # 0.01 keeps the policy pinned at max entropy: the survive-stage advantage signal is
+    # too weak to beat it. Swept 0.01/0.001/0.0 -- 0.001 moves the policy and survives
+    # longest. See data/runs.md.
+    p.add_argument("--ent-coef", type=float, default=0.001)
     p.add_argument("--vf-coef", type=float, default=0.5)
     p.add_argument("--max-grad-norm", type=float, default=0.5)
     p.add_argument("--update-epochs", type=int, default=4)
@@ -284,6 +287,17 @@ def main() -> None:
         writer.add_scalar("losses/entropy", entropy.mean().item(), global_step)
         writer.add_scalar("losses/clipfrac", float(np.mean(clipfracs)), global_step)
         writer.add_scalar("charts/reward_per_step", rew_buf.mean().item(), global_step)
+        # If advantage_std collapses toward zero the reward is action-independent and no
+        # policy gradient exists, no matter how long you train. Watch this before anything.
+        writer.add_scalar("diag/advantage_std", b_adv.std().item(), global_step)
+        writer.add_scalar("diag/advantage_absmean", b_adv.abs().mean().item(), global_step)
+        writer.add_scalar("diag/return_mean", b_ret.mean().item(), global_step)
+        var_y = b_ret.var().item()
+        writer.add_scalar(
+            "diag/explained_variance",
+            float("nan") if var_y == 0 else 1.0 - (b_ret - b_val).var().item() / var_y,
+            global_step,
+        )
 
         msg = f"update {update}/{num_updates} step {global_step:,} sps {sps:,}"
         if ep_returns:
