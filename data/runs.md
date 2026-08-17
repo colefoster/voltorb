@@ -4,7 +4,7 @@ One line of hypothesis per run. Newest first.
 
 | run | stage | steps | hypothesis | result |
 |---|---|---|---|---|
-| `dex-02` | dex | 50M | Rebalanced: new species 300 (was 100), catch progress 2.0 (was 0.5), height 0.001 (was 0.01), score off. dex-01's shaping paid ~100/episode against 100 for a whole species, so the objective was drowned. | running |
+| `dex-02` | dex | 50M | Rebalanced: new species 300 (was 100), catch progress 2.0 (was 0.5), height 0.001 (was 0.01), score off. dex-01's shaping paid ~100/episode against 100 for a whole species, so the objective was drowned. | **null again, stopped at 31M/50M.** dex/game 0.82 +- 0.10 vs random 0.94 +- 0.07 = -0.9 sigma, i.e. slightly worse. `dex>=1` 61% vs 78%. The reward-balance hypothesis is disproven: 3x the species bonus with shaping off changed nothing. |
 | `dex-01` | dex | 50M | Warm-started from `score-01`. The real objective: reward only species not already in the Pokedex this episode. Target is dex/game clearly above random's 0.67. | **null result.** dex/game 1.05 +- 0.09 vs random 0.94 +- 0.07 = +1.0 sigma, indistinguishable. `dex>=1` 76% vs random's 78%. Training showed `game/dex_caught` rising 0.75 -> 0.99 but that was the rolling window, not a real gain. |
 | `score-01` | score | 50M | Warm-started from `survive-03`. Adding log-scaled score deltas on top of height shaping teaches the agent to hit things on purpose without losing the retention it already has. Watch that `ep_len` does not regress below ~20k while `game/score` climbs. | **worked.** 24-episode eval: 20,438 frames (+34% over random), score median 22.4M (+19%), mean 70.6M (3.7x), dex 1.00/game vs random 0.67. Best checkpoint so far. |
 | `survive-03` | survive | 50M | With `ent_coef=0.001` and the height-shaped reward, ball retention actually learns. | **worked.** Monotone across all five 10M buckets: 17,938 / 18,127 / 18,852 / 19,089 / 20,646 mean `ep_len`. Final 20-ep window **23,955 vs 16,891 random (+42%)**, best 26,731. Entropy 1.386 -> 1.251, `explained_variance` -0.124 -> 0.826, `advantage_std` 0.088 -> 0.151. |
@@ -83,3 +83,28 @@ to do. Fixed in dex-02: species 300, height 0.001 (~10/episode), score 0.
 
 **Always eval with standard errors.** At n=24 random scored 0.67 dex/game; at n=80 it scored
 0.94. Per-episode variance is ~1 catch on a mean of ~1, so anything under 2 sigma is noise.
+
+## Where the dex objective actually stands
+
+Three attempts (dex-01, dex-02, and score-01 incidentally) all land within noise of random
+on catches, while ball control improves significantly. The reward-weight explanation is
+dead -- dex-02 tripled the species bonus, zeroed score, and cut height shaping 10x, and
+came out marginally worse.
+
+**The leading explanation is now horizon, not weighting.** `gamma=0.999` gives an effective
+horizon of ~1,000 frames. A catch requires: enter a special mode, flip ~6 catch tiles, hit
+the target ~6 times to reveal the silhouette, then hit it 3-4 more times -- a sequence
+spanning several thousand frames. A 300-point payout that far downstream is discounted to
+nothing by the time credit reaches the flipper actions that caused it. The agent is not
+being stubborn; it cannot see the connection.
+
+Two candidate fixes, in order of promise:
+
+1. **Train the sub-task directly.** `gw.start_catch_mode(pokemon, unlimited_time=True)` forces
+   catch mode on demand. Reset straight into it so every episode is a short, dense catch
+   attempt instead of a 20,000-frame game where catches are incidental. This converts a
+   sparse long-horizon problem into a dense short-horizon one, then transfers back.
+2. **Raise gamma to 0.9999** (horizon ~10,000 frames) for the dex stage alone. Cheaper to
+   try, but slower to learn and it does not fix the underlying rarity.
+
+Do (1) before spending another 50M steps on the full game.
