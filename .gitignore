@@ -1,0 +1,16 @@
+# ROMs are never committed — supply your own dump.
+roms/
+*.gbc
+*.gb
+*.gba
+*.sav
+*.ram
+*.state
+
+.venv/
+__pycache__/
+*.py[cod]
+runs/
+videos/
+*.mp4
+.DS_Store
