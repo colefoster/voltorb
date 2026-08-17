@@ -126,7 +126,59 @@ class DexReward(ScoreReward):
         return reward
 
 
-_STAGES = {"survive": SurviveReward, "score": ScoreReward, "dex": DexReward}
+class CatchReward(Reward):
+    """Sub-task stage: the episode begins inside a catch attempt and ends when it resolves.
+
+    Exists because dex-01 and dex-02 both came back statistically indistinguishable from
+    random. A catch spans several thousand frames (enter mode, flip ~6 catch tiles, hit the
+    target ~6 times, then 3-4 more) while gamma=0.999 only reaches ~1,000 frames back, so
+    the payout never reaches the actions that earned it. Here the whole episode IS the
+    catch, so the horizon covers it and every episode carries signal.
+    """
+
+    def __init__(
+        self,
+        catch_bonus: float = 100.0,
+        progress_bonus: float = 5.0,
+        ball_lost_penalty: float = 10.0,
+        height_weight: float = 0.002,
+        time_penalty: float = 0.002,
+    ):
+        self.catch_bonus = catch_bonus
+        self.progress_bonus = progress_bonus
+        self.ball_lost_penalty = ball_lost_penalty
+        self.height_weight = height_weight
+        self.time_penalty = time_penalty
+
+    def reset(self, raw, gw) -> None:
+        super().reset(raw, gw)
+        self._prev_progress = raw["catch_tiles_flipped"] + raw["mon_hits"]
+
+    def step(self, raw, gw, *, ball_lost: bool) -> float:
+        height = 1.0 - min(raw["ball_y"], PLAYFIELD_HEIGHT) / PLAYFIELD_HEIGHT
+        reward = self.height_weight * height - self.time_penalty
+
+        progress = raw["catch_tiles_flipped"] + raw["mon_hits"]
+        if progress > self._prev_progress:
+            reward += self.progress_bonus * (progress - self._prev_progress)
+        self._prev_progress = progress
+
+        caught = raw["dex_caught"]
+        if caught > self._prev_caught:
+            reward += self.catch_bonus * (caught - self._prev_caught)
+            self._prev_caught = caught
+
+        if ball_lost:
+            reward -= self.ball_lost_penalty
+        return reward
+
+
+_STAGES = {
+    "survive": SurviveReward,
+    "score": ScoreReward,
+    "dex": DexReward,
+    "catch": CatchReward,
+}
 
 
 def make_reward(stage: str, **kwargs) -> Reward:

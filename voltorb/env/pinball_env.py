@@ -118,7 +118,12 @@ class EnvConfig:
     frame_skip: int = 1  # frame-level control; see the design spec
     max_frames: int = 60 * 60 * 30  # 30 min of game time, truncation backstop
     launch_grace_frames: int = 120  # frames the agent gets to press A before we do it
-    stage: str = "dex"  # curriculum stage: "survive" | "score" | "dex"
+    stage: str = "dex"  # curriculum stage: "survive" | "score" | "dex" | "catch"
+    # "catch" trains the catch sub-task in isolation: every episode starts already inside
+    # catch mode, so the agent gets a dense stream of attempts instead of one incidental
+    # catch per 20,000-frame game. Full-game stages leave these unused.
+    catch_max_frames: int = 5_400  # 90s; the natural mode timer runs 1-2.5 min
+    catch_launch_frames: int = 400  # frames to get the ball into play before forcing mode
     reward_kwargs: dict = field(default_factory=dict)
 
 
@@ -316,8 +321,19 @@ class PinballEnv(gym.Env):
         )
         reward = self.reward_fn.step(raw, self.gw, ball_lost=ball_lost)
 
-        terminated = bool(self.gw.game_over)
-        truncated = self._frames >= self.config.max_frames
+        if self.config.stage == "catch":
+            # End as soon as the attempt resolves, so episodes stay short and every one is
+            # a full catch attempt. Mode going inactive means it timed out or completed.
+            # Deliberately NOT terminating on special_mode_active going false: it drops out
+            # mid-attempt (observed at frame 2,940 with 96s still on the clock), which cut
+            # episodes to a 1,320-frame median and gave a 0/30 catch rate.
+            terminated = bool(
+                self.gw.game_over or ball_lost or raw["dex_caught"] > self._episode_start_dex
+            )
+            truncated = self._frames >= self.config.catch_max_frames
+        else:
+            terminated = bool(self.gw.game_over)
+            truncated = self._frames >= self.config.max_frames
         info = {}
         if terminated or truncated:
             info = {
@@ -328,6 +344,25 @@ class PinballEnv(gym.Env):
                 "evolutions": self.gw.evolution_success_count,
             }
         return self._observe(raw), reward, terminated, truncated, info
+
+    def _force_catch_mode(self) -> None:
+        """Put the ball in play, then drop straight into a catch attempt for a random
+        species. Randomised so the policy learns the mechanic rather than one target."""
+        from pyboy.plugins.game_wrapper_pokemon_pinball import Pokemon
+
+        self.pyboy.button("a", 5)
+        for _ in range(self.config.catch_launch_frames):
+            self.pyboy.tick(1, self.config.render, False)
+            if self.gw.current_stage == 0:
+                break
+        self._launched = True
+        species = list(Pokemon)[self.np_random.integers(0, len(list(Pokemon)))]
+        # unlimited_time: the natural 120s timer ends the attempt long before a learning
+        # policy could finish one, and special_mode_active flickers off mid-attempt anyway.
+        # Give the sub-task room; the timer can come back once catches are reliable.
+        self.gw.start_catch_mode(pokemon=species, unlimited_time=True)
+        self.pyboy.tick(10, self.config.render, False)
+        self._catch_mode_seen = bool(self.gw.special_mode_active)
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -340,7 +375,11 @@ class PinballEnv(gym.Env):
         self._prev_xy = self._ball_xy()
         self._frames = 0
         self._launched = False
+        self._catch_mode_seen = False
+        if self.config.stage == "catch":
+            self._force_catch_mode()
         raw = self._raw_state()
+        self._episode_start_dex = raw["dex_caught"]
         self.reward_fn.reset(raw, self.gw)
         return self._observe(raw), {}
 

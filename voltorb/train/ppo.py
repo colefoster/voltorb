@@ -118,7 +118,7 @@ def record_video(model: ActorCritic, args, path: Path, device, max_frames: int =
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", default="survive", choices=["survive", "score", "dex"])
+    p.add_argument("--stage", default="survive", choices=["survive", "score", "dex", "catch"])
     p.add_argument("--rom", default="roms/pokemon_pinball.gbc")
     p.add_argument("--run-name", default=None)
     p.add_argument("--init-from", default=None, help="checkpoint to warm-start from")

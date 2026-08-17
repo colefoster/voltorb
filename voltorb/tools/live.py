@@ -160,7 +160,8 @@ class Player:
                             "reward": f"{ep_reward:.1f}",
                             "score": f"{gw.score:,}",
                             "balls_left": gw.balls_left,
-                            "dex_caught": sum(1 for v in gw.pokedex if v == 2),
+                            # bitfield: bit 1 = caught, so 2 and 3 both count
+                            "dex_caught": sum(1 for v in env._dex_bytes() if v & 2),
                             "stage_id": gw.current_stage,
                             "fps": f"{fps:,.0f}",
                         }
@@ -232,7 +233,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default="runs/score-01/latest.pt")
     ap.add_argument("--rom", default="roms/pokemon_pinball.gbc")
-    ap.add_argument("--stage", default="score", choices=["survive", "score", "dex"])
+    ap.add_argument("--stage", default="score", choices=["survive", "score", "dex", "catch"])
     ap.add_argument("--frame-skip", type=int, default=1)
     # 9875/9876 are taken by other local dashboards on this machine.
     ap.add_argument("--port", type=int, default=9880)

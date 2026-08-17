@@ -4,6 +4,7 @@ One line of hypothesis per run. Newest first.
 
 | run | stage | steps | hypothesis | result |
 |---|---|---|---|---|
+| `catch-01` | catch | 50M | Warm-started from `score-01`. Train the catch sub-task in isolation: every episode starts inside a forced catch attempt and ends when it resolves. Random baseline is 12% catch rate over ~1,965-frame episodes, so there is finally a gradient. | running |
 | `dex-02` | dex | 50M | Rebalanced: new species 300 (was 100), catch progress 2.0 (was 0.5), height 0.001 (was 0.01), score off. dex-01's shaping paid ~100/episode against 100 for a whole species, so the objective was drowned. | **null again, stopped at 31M/50M.** dex/game 0.82 +- 0.10 vs random 0.94 +- 0.07 = -0.9 sigma, i.e. slightly worse. `dex>=1` 61% vs 78%. The reward-balance hypothesis is disproven: 3x the species bonus with shaping off changed nothing. |
 | `dex-01` | dex | 50M | Warm-started from `score-01`. The real objective: reward only species not already in the Pokedex this episode. Target is dex/game clearly above random's 0.67. | **null result.** dex/game 1.05 +- 0.09 vs random 0.94 +- 0.07 = +1.0 sigma, indistinguishable. `dex>=1` 76% vs random's 78%. Training showed `game/dex_caught` rising 0.75 -> 0.99 but that was the rolling window, not a real gain. |
 | `score-01` | score | 50M | Warm-started from `survive-03`. Adding log-scaled score deltas on top of height shaping teaches the agent to hit things on purpose without losing the retention it already has. Watch that `ep_len` does not regress below ~20k while `game/score` climbs. | **worked.** 24-episode eval: 20,438 frames (+34% over random), score median 22.4M (+19%), mean 70.6M (3.7x), dex 1.00/game vs random 0.67. Best checkpoint so far. |
@@ -108,3 +109,22 @@ Two candidate fixes, in order of promise:
    try, but slower to learn and it does not fix the underlying rarity.
 
 Do (1) before spending another 50M steps on the full game.
+
+## The catch sub-task (stage `catch`)
+
+Every episode starts already inside a catch attempt via `gw.start_catch_mode()`, with a
+randomly chosen species so the policy learns the mechanic and not one target.
+
+Getting a usable baseline took two fixes, both found by measuring instead of training:
+
+- **Terminating on `special_mode_active` going false was wrong.** It flickers off mid-attempt
+  -- observed at frame 2,940 with 96 seconds still on the clock -- which cut episodes to a
+  1,320-frame median and produced a **0/30** catch rate. Termination is now catch success,
+  ball lost, or game over.
+- **The natural 120s mode timer ends attempts before a learning policy could finish one**, so
+  the sub-task uses `unlimited_time=True`. Put the timer back once catches are reliable.
+
+Random baseline in this stage: **12% catch rate (5/40)**, episodes ~1,965 frames, and catch
+progress (tiles + hits) nonzero in 40% of episodes. That is the first version of this
+objective with a gradient to climb -- full-game episodes hid one catch inside 20,000 frames,
+well beyond what gamma=0.999 can assign credit across.
