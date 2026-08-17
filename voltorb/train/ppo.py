@@ -77,9 +77,16 @@ class ActorCritic(nn.Module):
 
 
 @torch.no_grad()
-def record_video(model: ActorCritic, args, path: Path, device, max_frames: int = 12_000) -> None:
-    """Greedy episode piped straight into ffmpeg. Every 4th frame, so a 3-minute game
-    becomes a watchable ~12 second clip."""
+def record_video(model: ActorCritic, args, path: Path, device, max_frames: int = 30_000) -> None:
+    """One episode piped straight into ffmpeg. Every 4th frame, so a ~6-minute game becomes
+    a watchable clip.
+
+    Samples from the policy rather than taking the argmax. The env is fully deterministic
+    (savestate reload, no stochastic reset), so a greedy policy replays a bit-identical
+    trajectory every time — the first attempt at this produced 20 clips of which only 4 were
+    unique and three sampled 20M steps apart were byte-identical. Sampling also shows the
+    behaviour policy that is actually being trained, not an argmax the agent never uses.
+    """
     env = PinballEnv(
         EnvConfig(rom_path=args.rom, frame_skip=args.frame_skip, stage=args.stage, render=True)
     )
@@ -97,7 +104,8 @@ def record_video(model: ActorCritic, args, path: Path, device, max_frames: int =
     try:
         for i in range(max_frames):
             logits, _ = model(torch.as_tensor(obs, dtype=torch.float32, device=device))
-            obs, _, terminated, truncated, _ = env.step(int(logits.argmax().item()))
+            action = int(Categorical(logits=logits).sample().item())
+            obs, _, terminated, truncated, _ = env.step(action)
             if i % 4 == 0:
                 proc.stdin.write(np.ascontiguousarray(env.render(), dtype=np.uint8).tobytes())
             if terminated or truncated:

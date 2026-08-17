@@ -116,7 +116,7 @@ class EnvConfig:
     render: bool = False  # keep the screen buffer live while headless, for video capture
     frame_skip: int = 1  # frame-level control; see the design spec
     max_frames: int = 60 * 60 * 30  # 30 min of game time, truncation backstop
-    launch_grace_frames: int = 600  # frames the agent gets to press A before we do it
+    launch_grace_frames: int = 120  # frames the agent gets to press A before we do it
     stage: str = "dex"  # curriculum stage: "survive" | "score" | "dex"
     reward_kwargs: dict = field(default_factory=dict)
 
@@ -265,15 +265,22 @@ class PinballEnv(gym.Env):
         )
         self._frames += self.config.frame_skip
 
-        # A also launches the ball. If the policy has not managed it within the grace
-        # window, launch for it so early training is not just millions of idle frames.
+        # A also launches the ball, and until it is launched nothing in the game advances:
+        # stage stays 1, the ball sits frozen in the plunger, score stays 0. If the policy
+        # has not pressed A within the grace window, keep pressing it until the game starts.
+        #
+        # current_stage is the only reliable in-play signal. Ball position is NOT — the
+        # coordinate bytes hold uninitialised garbage before launch (ball_y reads 152), so
+        # testing ball_y > 0 latches instantly and disables this fallback entirely. That bug
+        # made every greedy-policy recording an identical clip of a ball that never moved.
         if not self._launched:
-            if self.gw.current_stage == 0 or self._ball_xy()[1] > 0:
+            if self.gw.current_stage == 0:
                 self._launched = True
-            elif self._frames >= self.config.launch_grace_frames:
+            elif (
+                self._frames >= self.config.launch_grace_frames
+                and self._frames % 30 < self.config.frame_skip
+            ):
                 self.pyboy.button("a", 5)
-                self.pyboy.tick(10, False, False)
-                self._launched = True
 
         raw = self._raw_state()
         ball_lost = (
