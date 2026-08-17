@@ -1,4 +1,4 @@
-"""Live view of the current policy in a browser, at http://localhost:9876.
+"""Live view of the current policy in a browser, at http://localhost:9880.
 
 Runs its own env in a background thread, plays with whatever checkpoint is on disk, and
 hot-reloads that checkpoint whenever it changes — so an open tab always shows the latest
@@ -114,11 +114,23 @@ class Player:
                 episode += 1
                 obs, _ = env.reset()
                 ep_reward, frame = 0.0, 0
+                frame_deadline = time.time()
                 while True:
                     now = time.time()
                     if now - last_reload_check > 3.0:
                         self._maybe_reload()
                         last_reload_check = now
+
+                    # Throttle to watchable speed. Uncapped this runs ~40x realtime, which
+                    # is both unwatchable and a wasted core.
+                    if self.args.speed > 0:
+                        target = frame_deadline + self.args.frame_skip / (
+                            60.0 * self.args.speed
+                        )
+                        delay = target - now
+                        if delay > 0:
+                            time.sleep(delay)
+                        frame_deadline = max(target, now - 0.25)
 
                     logits, _ = self.model(torch.as_tensor(obs, dtype=torch.float32))
                     action = int(Categorical(logits=logits).sample().item())
@@ -222,9 +234,16 @@ def main() -> None:
     ap.add_argument("--rom", default="roms/pokemon_pinball.gbc")
     ap.add_argument("--stage", default="score", choices=["survive", "score", "dex"])
     ap.add_argument("--frame-skip", type=int, default=1)
-    ap.add_argument("--port", type=int, default=9876)
+    # 9875/9876 are taken by other local dashboards on this machine.
+    ap.add_argument("--port", type=int, default=9880)
     ap.add_argument(
         "--every", type=int, default=2, help="emit every Nth frame; raise to cut bandwidth"
+    )
+    ap.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="playback multiple of realtime; 0 = uncapped (~40x, unwatchable)",
     )
     args = ap.parse_args()
 
