@@ -14,3 +14,4 @@ runs/
 videos/
 *.mp4
 .DS_Store
+*.log

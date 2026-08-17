@@ -113,6 +113,7 @@ _SCALES: dict[str, float] = {
 class EnvConfig:
     rom_path: str = "roms/pokemon_pinball.gbc"
     headless: bool = True
+    render: bool = False  # keep the screen buffer live while headless, for video capture
     frame_skip: int = 1  # frame-level control; see the design spec
     max_frames: int = 60 * 60 * 30  # 30 min of game time, truncation backstop
     launch_grace_frames: int = 600  # frames the agent gets to press A before we do it
@@ -257,7 +258,11 @@ class PinballEnv(gym.Env):
         prev_lost_during_saver = self.gw.lost_ball_during_saver
 
         self._prev_xy = self._ball_xy()
-        self.pyboy.tick(self.config.frame_skip, not self.config.headless, False)
+        self.pyboy.tick(
+            self.config.frame_skip,
+            self.config.render or not self.config.headless,
+            False,
+        )
         self._frames += self.config.frame_skip
 
         # A also launches the ball. If the policy has not managed it within the grace
