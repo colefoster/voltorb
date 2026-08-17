@@ -223,12 +223,18 @@ def main() -> None:
                 mask = np.asarray(mask, dtype=bool)
                 ep_returns.extend(np.asarray(infos["episode"]["r"])[mask].tolist())
                 ep_lengths.extend(np.asarray(infos["episode"]["l"])[mask].tolist())
-            for key in ("score", "dex_caught"):
-                if key in infos:
-                    vals = np.asarray(infos[key], dtype=np.float64)
-                    valid = np.asarray(infos.get(f"_{key}", done), dtype=bool)
+            # Our env only emits info on terminal steps, and the vector wrapper files that
+            # under final_info -- NOT at the top level. Reading the top level silently
+            # logged nothing at all for a whole 50M-step run.
+            final = infos.get("final_info")
+            if final:
+                for key in ("score", "dex_caught", "caught_in_session"):
+                    if key not in final:
+                        continue
+                    vals = np.asarray(final[key], dtype=np.float64)
+                    valid = np.asarray(final.get(f"_{key}", done), dtype=bool)
                     if valid.any():
-                        ep_infos.append({key: vals[valid].mean()})
+                        ep_infos.append({key: float(vals[valid].mean())})
 
         with torch.no_grad():
             _, next_value = model(next_obs)
@@ -314,7 +320,7 @@ def main() -> None:
             writer.add_scalar("charts/episodic_return", window_r, global_step)
             writer.add_scalar("charts/episodic_length", window_l, global_step)
             msg += f" | ep_return {window_r:.1f} ep_len {window_l:,.0f} (n={len(ep_returns)})"
-        for key in ("score", "dex_caught"):
+        for key in ("score", "dex_caught", "caught_in_session"):
             vals = [d[key] for d in ep_infos[-20:] if key in d]
             if vals:
                 writer.add_scalar(f"game/{key}", float(np.mean(vals)), global_step)

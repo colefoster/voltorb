@@ -35,6 +35,7 @@ ADDR_TIMER_MINUTES = 0xD57B
 ADDR_TIMER_ACTIVE = 0xD57D
 ADDR_SPECIAL_MODE_STATE = 0xD54D
 ADDR_STAGE_COLLISION_STATE = 0xD4AF
+ADDR_POKEDEX = 0xD962  # 151 bytes, one bitfield per species
 
 # Four actions: the flipper state to hold for this frame. Unlike press/release action
 # schemes this is stateless — the agent re-declares intent every frame, so "hold to trap"
@@ -128,8 +129,15 @@ def _wrapped_delta(now: float, prev: float) -> float:
 
 
 def _dex_caught_count(pokedex) -> int:
-    # The wrapper stores one byte per species: 2 == caught, 1 == seen.
-    return sum(1 for v in pokedex if v == 2)
+    """Count caught species from a slice of Pokedex bytes.
+
+    The per-species byte is a bitfield, not an enum: bit 0 = seen, bit 1 = caught. So a
+    caught species reads 2 if it was never "seen" first and 3 in the normal case where it
+    was. PyBoy's own has_pokemon() tests `== 2` and therefore misses most real catches --
+    observed directly: index 12 went 1 -> 3 at the exact frame the catch counter
+    incremented, while index 0 went 0 -> 2.
+    """
+    return sum(1 for v in pokedex if v & 2)
 
 
 class PinballEnv(gym.Env):
@@ -169,8 +177,17 @@ class PinballEnv(gym.Env):
         )
 
         # Boot once to the pre-launch state and keep it in memory. Reloading this is far
-        # cheaper than rebooting, and guarantees an identical empty Pokedex every episode.
+        # cheaper than rebooting, and gives an identical starting Pokedex every episode.
         self.gw.start_game()
+
+        # Wipe the Pokedex before snapshotting. PyBoy persists cartridge SRAM to
+        # <rom>.ram on exit and reloads it on boot, so without this every run inherits the
+        # catches of every previous run -- measured at 8 species already caught at reset,
+        # silently making "new species this episode" mean the wrong thing and shrinking the
+        # objective over time.
+        for i in range(N_SPECIES):
+            self.pyboy.memory[ADDR_POKEDEX + i] = 0
+
         self._boot_state = io.BytesIO()
         self.pyboy.save_state(self._boot_state)
 
@@ -180,6 +197,14 @@ class PinballEnv(gym.Env):
         self._launched = False
 
     # ---- observation -------------------------------------------------------------
+
+    def _dex_bytes(self):
+        """Pokedex bytes read live from memory.
+
+        NOT gw.pokedex: that list is refreshed by PyBoy's tick hooks, so immediately after
+        a load_state() it still holds the previous episode's catches.
+        """
+        return self.pyboy.memory[ADDR_POKEDEX : ADDR_POKEDEX + N_SPECIES]
 
     def _ball_xy(self) -> tuple[float, float]:
         """Ball position in pixels, subpixel precision retained. See ADDR_BALL_X."""
@@ -193,7 +218,8 @@ class PinballEnv(gym.Env):
         x, y = self._ball_xy()
         px, py = self._prev_xy
         target = mem[ADDR_POKEMON_TO_CATCH]
-        pokedex = gw.pokedex
+        pokedex = self._dex_bytes()
+        dex_caught = _dex_caught_count(pokedex)
         return {
             "ball_x": x,
             "ball_y": y,
@@ -219,9 +245,10 @@ class PinballEnv(gym.Env):
             "rare_pokemon_flag": float(bool(mem[ADDR_RARE_POKEMON_FLAG])),
             "catch_tiles_flipped": mem[ADDR_NUM_CATCH_TILES_FLIPPED],
             "mon_hits": mem[ADDR_NUM_MON_HITS],
-            "dex_caught_frac": _dex_caught_count(pokedex) / N_SPECIES,
+            "dex_caught": dex_caught,
+            "dex_caught_frac": dex_caught / N_SPECIES,
             "target_already_caught": float(
-                0 < target <= N_SPECIES and pokedex[target - 1] == 2
+                0 < target <= N_SPECIES and bool(pokedex[target - 1] & 2)
             ),
         }
 
@@ -296,7 +323,7 @@ class PinballEnv(gym.Env):
             info = {
                 "score": self.gw.score,
                 "frames": self._frames,
-                "dex_caught": _dex_caught_count(self.gw.pokedex),
+                "dex_caught": _dex_caught_count(self._dex_bytes()),
                 "caught_in_session": self.gw.pokemon_caught_in_session,
                 "evolutions": self.gw.evolution_success_count,
             }

@@ -11,15 +11,10 @@ N_SPECIES = 151
 PLAYFIELD_HEIGHT = 172.0  # max observed ball_y; see tools/validate.py
 
 
-def _dex_caught(pokedex) -> int:
-    # One byte per species in the wrapper's Pokedex: 2 == caught, 1 == seen.
-    return sum(1 for v in pokedex if v == 2)
-
-
 class Reward:
     def reset(self, raw, gw) -> None:
         self._prev_score = gw.score
-        self._prev_caught = _dex_caught(gw.pokedex)
+        self._prev_caught = raw["dex_caught"]
         self._prev_evolutions = gw.evolution_success_count
 
     def step(self, raw, gw, *, ball_lost: bool) -> float:
@@ -102,7 +97,7 @@ class DexReward(ScoreReward):
     def step(self, raw, gw, *, ball_lost: bool) -> float:
         reward = super().step(raw, gw, ball_lost=ball_lost)
 
-        caught = _dex_caught(gw.pokedex)
+        caught = raw["dex_caught"]
         if caught > self._prev_caught:
             reward += self.new_species_bonus * (caught - self._prev_caught)
             self._prev_caught = caught
