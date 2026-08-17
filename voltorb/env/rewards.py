@@ -79,13 +79,21 @@ class DexReward(ScoreReward):
 
     def __init__(
         self,
-        new_species_bonus: float = 100.0,
-        evolution_bonus: float = 20.0,
-        catch_progress_bonus: float = 0.5,
-        score_weight: float = 0.02,
+        new_species_bonus: float = 300.0,
+        evolution_bonus: float = 50.0,
+        catch_progress_bonus: float = 2.0,
+        score_weight: float = 0.0,
+        height_weight: float = 0.001,
         **kwargs,
     ):
-        super().__init__(score_weight=score_weight, **kwargs)
+        # dex-01 failed because the shaping outweighed the objective. Over a ~20,000-frame
+        # episode the old height term paid 0.01 * ~0.5 * 20,000 ~= 100, exactly what ONE new
+        # species was worth, and the score term added more on top. The agent optimised what
+        # it was actually paid for: it survived (+3.3 sigma vs random) and caught nothing
+        # (+1.0 sigma, indistinguishable). Height now pays ~10 per episode against 300 per
+        # species, and score is off entirely -- stage 2 already showed score tracks bumper
+        # luck more than skill.
+        super().__init__(score_weight=score_weight, height_weight=height_weight, **kwargs)
         self.new_species_bonus = new_species_bonus
         self.evolution_bonus = evolution_bonus
         self.catch_progress_bonus = catch_progress_bonus

@@ -4,7 +4,8 @@ One line of hypothesis per run. Newest first.
 
 | run | stage | steps | hypothesis | result |
 |---|---|---|---|---|
-| `dex-01` | dex | 50M | Warm-started from `score-01`. The real objective: reward only species not already in the Pokedex this episode. Target is dex/game clearly above random's 0.67. | running |
+| `dex-02` | dex | 50M | Rebalanced: new species 300 (was 100), catch progress 2.0 (was 0.5), height 0.001 (was 0.01), score off. dex-01's shaping paid ~100/episode against 100 for a whole species, so the objective was drowned. | running |
+| `dex-01` | dex | 50M | Warm-started from `score-01`. The real objective: reward only species not already in the Pokedex this episode. Target is dex/game clearly above random's 0.67. | **null result.** dex/game 1.05 +- 0.09 vs random 0.94 +- 0.07 = +1.0 sigma, indistinguishable. `dex>=1` 76% vs random's 78%. Training showed `game/dex_caught` rising 0.75 -> 0.99 but that was the rolling window, not a real gain. |
 | `score-01` | score | 50M | Warm-started from `survive-03`. Adding log-scaled score deltas on top of height shaping teaches the agent to hit things on purpose without losing the retention it already has. Watch that `ep_len` does not regress below ~20k while `game/score` climbs. | **worked.** 24-episode eval: 20,438 frames (+34% over random), score median 22.4M (+19%), mean 70.6M (3.7x), dex 1.00/game vs random 0.67. Best checkpoint so far. |
 | `survive-03` | survive | 50M | With `ent_coef=0.001` and the height-shaped reward, ball retention actually learns. | **worked.** Monotone across all five 10M buckets: 17,938 / 18,127 / 18,852 / 19,089 / 20,646 mean `ep_len`. Final 20-ep window **23,955 vs 16,891 random (+42%)**, best 26,731. Entropy 1.386 -> 1.251, `explained_variance` -0.124 -> 0.826, `advantage_std` 0.088 -> 0.151. |
 | `survive-01` | survive | 50M | Frame-level 4-action control learns ball retention from 26 RAM floats. | **failed — no learning.** Entropy 1.385 -> 1.381 (max is ln 4 = 1.386), i.e. still uniform random after 50M steps. `ep_len` 17.9k -> 19.4k is noise. Cause: `ent_coef=0.01` overwhelmed a weak advantage signal, and the constant `+0.01`/frame alive bonus was information-free. |
@@ -60,3 +61,25 @@ One line of hypothesis per run. Newest first.
   garbage, so a `ball_y > 0` test latched "launched" immediately and disabled the fallback.
 - **Terminal info arrives under `infos["final_info"]`**, not at the top level, so
   `game/score` logged nothing for an entire 50M-step run.
+
+## Definitive evaluation (80 episodes each, with standard errors)
+
+| checkpoint | frames +- se | score median | dex/game +- se | dex>=1 % |
+|---|---|---|---|---|
+| random | 17,200 +- 637 | 20,748,100 | 0.94 +- 0.07 | 78% |
+| score-01 | 21,204 +- 1,021 | 22,902,350 | 1.18 +- 0.10 | 76% |
+| dex-01 | 20,240 +- 1,425 | 22,164,825 | 1.05 +- 0.09 | 76% |
+
+**Ball control works; catching does not.** score-01 survives +23% longer than random at
++3.3 sigma -- a real result. But on the actual objective, score-01 is +1.9 sigma and dex-01
+is +1.0 sigma, both inside the noise. No checkpoint meets the done bar, and random has the
+best `dex>=1` rate of the four.
+
+**Why dex-01 failed, and it is a design error not a bug.** Over a ~20,000-frame episode the
+height shaping paid `0.01 * ~0.5 * 20,000 ~= 100` reward. One new species was also worth
+100. The shaping term was worth as much as the entire objective and the score term added
+more on top, so the agent optimised survival and bumpers, which is exactly what it was paid
+to do. Fixed in dex-02: species 300, height 0.001 (~10/episode), score 0.
+
+**Always eval with standard errors.** At n=24 random scored 0.67 dex/game; at n=80 it scored
+0.94. Per-episode variance is ~1 catch on a mean of ~1, so anything under 2 sigma is noise.

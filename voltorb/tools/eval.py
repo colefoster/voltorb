@@ -78,6 +78,11 @@ def evaluate(checkpoint: str, args) -> dict:
         "score_median": np.median(get("score")),
         "score_max": get("score").max(),
         "dex_mean": get("dex").mean(),
+        # Per-episode variance here is large (sd ~ 1 catch on a mean of ~1), so a raw
+        # difference of 0.2 between checkpoints is well inside the noise. Always read the
+        # standard error before claiming one policy beats another.
+        "dex_stderr": get("dex").std(ddof=1) / np.sqrt(len(e)),
+        "frames_stderr": get("frames").std(ddof=1) / np.sqrt(len(e)),
         "dex_hit_rate": float((get("dex") >= 1).mean()) * 100.0,
         "caught_mean": get("caught").mean(),
     }
@@ -99,17 +104,33 @@ def main() -> None:
     rows = [evaluate(c, args) for c in args.checkpoint]
 
     print(
-        f"\n{'checkpoint':34s} {'n':>3s} {'frames':>9s} {'score mean':>13s} "
-        f"{'score med':>13s} {'dex/game':>9s} {'dex>=1 %':>9s} {'caught':>7s}"
+        f"\n{'checkpoint':30s} {'n':>3s} {'frames +- se':>20s} "
+        f"{'score med':>13s} {'dex/game +- se':>18s} {'dex>=1 %':>9s}"
     )
     for r in rows:
         name = r["checkpoint"]
-        name = name if len(name) <= 34 else "..." + name[-31:]
+        name = name if len(name) <= 30 else "..." + name[-27:]
         print(
-            f"{name:34s} {r['n']:3d} {r['frames_mean']:9,.0f} {r['score_mean']:13,.0f} "
-            f"{r['score_median']:13,.0f} {r['dex_mean']:9.2f} {r['dex_hit_rate']:8.0f}% "
-            f"{r['caught_mean']:7.2f}"
+            f"{name:30s} {r['n']:3d} "
+            f"{r['frames_mean']:12,.0f} +-{r['frames_stderr']:6,.0f} "
+            f"{r['score_median']:13,.0f} "
+            f"{r['dex_mean']:11.2f} +-{r['dex_stderr']:5.2f} "
+            f"{r['dex_hit_rate']:8.0f}%"
         )
+
+    base = next((r for r in rows if r["checkpoint"] == "random"), None)
+    if base and len(rows) > 1:
+        print("\nvs random (difference in dex/game, in standard errors):")
+        for r in rows:
+            if r is base:
+                continue
+            diff = r["dex_mean"] - base["dex_mean"]
+            se = float(np.hypot(r["dex_stderr"], base["dex_stderr"]))
+            sigma = diff / se if se else 0.0
+            verdict = "significant" if abs(sigma) >= 2 else "NOT distinguishable from random"
+            name = r["checkpoint"]
+            print(f"  {name if len(name) <= 30 else '...' + name[-27:]:30s} "
+                  f"{diff:+.2f} = {sigma:+.1f} sigma  ({verdict})")
 
 
 if __name__ == "__main__":
