@@ -190,7 +190,17 @@ class SaucerReward(DexReward):
             # Proximity paid per frame, exactly like the ball-height term that is the only
             # shaping this project has ever gotten to work. saucer-01 showed the
             # potential-based form moves catch entries a little and saucer visits not at all.
-            reward += self.saucer_weight * (1.0 + potential)
+            #
+            # Gated on stage 0, and that gate is the point. current_stage indexes two
+            # different screens: measured over 121,752 frames, the ball is at (124,120) in
+            # 1,437 frames of stage 0 and *zero* frames of stage 1, and all measured saucer
+            # visits and catch-mode entries are stage 0 -- but stage 1 is 69% of all frames.
+            # Ungated (saucer-01 and saucer-02, both null on visits), this term spent most of
+            # its budget paying for proximity to a coordinate on the wrong screen. Gating a
+            # raw term is safe; gating the potential-based form is not, because every gate
+            # flip becomes a reward spike.
+            if raw["current_stage"] == 0:
+                reward += self.saucer_weight * (1.0 + potential)
         else:
             reward += self.saucer_weight * (self.gamma * potential - self._prev_potential)
         self._prev_potential = potential
