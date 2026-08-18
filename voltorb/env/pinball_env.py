@@ -155,12 +155,32 @@ class EnvConfig:
     frame_skip: int = 1  # frame-level control; see the design spec
     max_frames: int = 60 * 60 * 30  # 30 min of game time, truncation backstop
     launch_grace_frames: int = 120  # frames the agent gets to press A before we do it
-    stage: str = "dex"  # "survive" | "score" | "dex" | "saucer" | "catch"
+    stage: str = "dex"  # "survive" | "score" | "dex" | "saucer" | "catch" | "shot"
     # "catch" trains the catch sub-task in isolation: every episode starts already inside
     # catch mode, so the agent gets a dense stream of attempts instead of one incidental
     # catch per 20,000-frame game. Full-game stages leave these unused.
     catch_max_frames: int = 5_400  # 90s; the natural mode timer runs 1-2.5 min
     catch_launch_frames: int = 400  # frames to get the ball into play before forcing mode
+    # "shot" trains the one thing the objective reduces to: getting the ball into the saucer.
+    # Episodes start from a savestate of a real shot opportunity -- ball in play, stage 0,
+    # saucer ready -- and last ~400 frames, which is the window tools/shotsearch.py measured
+    # the shot to be decided in. Base rate 12.7%, the same shape as the catch sub-task that is
+    # the only thing in this project that has ever trained.
+    #
+    # The states come from actual random play in this same env, so every observation field is
+    # a real one. That is deliberate: catch-01 started episodes from a synthesised
+    # start_catch_mode(unlimited_time=True), which left timer_active and timer_remaining
+    # frozen at values that occur in 0% of real attempts -- two of twenty-six inputs wrong for
+    # a whole run.
+    # 1,200 frames (20s), chosen by measurement, not by the 400-frame window shotsearch used:
+    # random hit rates are 2.5% at 400 frames, 8.5% at 700 and 12.5% +- 2.3% at 1,200. The last
+    # matches the ~12% base rate that made the catch sub-task trainable, and mean episode length
+    # is 625 frames -- still inside gamma=0.999's ~1,000-frame credit window, and ~30x shorter
+    # than a full game.
+    shot_max_frames: int = 1_200
+    shot_pool_size: int = 48       # savestates held per worker
+    shot_pool_gap: int = 400       # frames between snapshots, so the pool is not one rally
+    shot_pool_refresh: int = 400   # episodes between pool rebuilds, to keep it from staling
     reward_kwargs: dict = field(default_factory=dict)
 
 
@@ -237,6 +257,8 @@ class PinballEnv(gym.Env):
         self._prev_xy = (0, 0)
         self._frames = 0
         self._launched = False
+        self._shot_pool: list[io.BytesIO] = []
+        self._episodes_since_pool = 0
         self._catch_entries = 0
         self._catch_idle_frames = self.CATCH_ENTRY_GAP_FRAMES
         self._saucer_visits = 0
@@ -339,6 +361,7 @@ class PinballEnv(gym.Env):
         # attempt. It is also mode-specific -- an unqualified edge pays for stage-change and
         # evolution modes, which is worth 100 per episode of free reward.
         raw["catch_entries"] = float(self._catch_entries)
+        raw["saucer_visits"] = float(self._saucer_visits)
 
     def _observe(self, raw: dict[str, float]) -> np.ndarray:
         vec = np.fromiter(
@@ -433,6 +456,12 @@ class PinballEnv(gym.Env):
                 self.gw.game_over or ball_lost or raw["dex_caught"] > self._episode_start_dex
             )
             truncated = self._frames >= self.config.catch_max_frames
+        elif self.config.stage == "shot":
+            # Success ends the episode, so the return is the shot and nothing else. Losing the
+            # ball ends it too -- otherwise the agent could farm the proximity term across a
+            # ball it has already lost.
+            terminated = bool(self._saucer_visits > 0 or ball_lost or self.gw.game_over)
+            truncated = self._frames >= self.config.shot_max_frames
         else:
             terminated = bool(self.gw.game_over)
             truncated = self._frames >= self.config.max_frames
@@ -457,6 +486,69 @@ class PinballEnv(gym.Env):
                 "slots_entered": self.gw.roulette_slots_entered,
             }
         return self._observe(raw), reward, terminated, truncated, info
+
+    def _is_shot_opportunity(self) -> bool:
+        """Ball in play, on the screen that has the saucer, with the saucer ready."""
+        return (
+            self.gw.current_stage == 0
+            and self.pyboy.memory[ADDR_CATCH_READY] == CATCH_READY_VALUE
+            and not self.gw.game_over
+        )
+
+    def _build_shot_pool(self) -> None:
+        """Collect savestates of real shot opportunities by playing randomly.
+
+        Only ~17% of frames qualify (stage 0 is 31% of frames, ready ~56%), and snapshots are
+        spaced by shot_pool_gap so the pool is a spread of situations rather than one rally
+        sampled forty-eight times.
+        """
+        self._shot_pool = []
+        self._boot_state.seek(0)
+        self.pyboy.load_state(self._boot_state)
+        self.gw.reset_tracking()
+        self._held = ACTION_NONE
+        self._frames = 0
+        self._launched = False
+        since = self.config.shot_pool_gap
+        budget = self.config.shot_pool_size * self.config.shot_pool_gap * 8
+        for _ in range(budget):
+            if len(self._shot_pool) >= self.config.shot_pool_size:
+                break
+            action = int(self.np_random.integers(0, N_ACTIONS))
+            if not self._launched and self._frames >= self.config.launch_grace_frames:
+                action = self._launch_action(action)
+            self._apply_action(action)
+            self.pyboy.tick(1, self.config.render, False)
+            self._frames += 1
+            if not self._launched and self.gw.current_stage == 0:
+                self._launched = True
+            since += 1
+            if self.gw.game_over:
+                self._boot_state.seek(0)
+                self.pyboy.load_state(self._boot_state)
+                self.gw.reset_tracking()
+                self._held = ACTION_NONE
+                self._frames = 0
+                self._launched = False
+                continue
+            if since >= self.config.shot_pool_gap and self._is_shot_opportunity():
+                snap = io.BytesIO()
+                self.pyboy.save_state(snap)
+                self._shot_pool.append(snap)
+                since = 0
+        self._episodes_since_pool = 0
+
+    def _load_shot_state(self) -> None:
+        if not self._shot_pool or self._episodes_since_pool >= self.config.shot_pool_refresh:
+            self._build_shot_pool()
+        snap = self._shot_pool[int(self.np_random.integers(0, len(self._shot_pool)))]
+        snap.seek(0)
+        self.pyboy.load_state(snap)
+        self.pyboy.button_release(LEFT_FLIPPER_BUTTON)
+        self.pyboy.button_release(RIGHT_FLIPPER_BUTTON)
+        self._held = ACTION_NONE
+        self._launched = True
+        self._episodes_since_pool += 1
 
     def _force_catch_mode(self) -> None:
         """Put the ball in play, then drop straight into a catch attempt for a random
@@ -489,6 +581,8 @@ class PinballEnv(gym.Env):
         self._frames = 0
         self._launched = False
         self._catch_mode_seen = False
+        if self.config.stage == "shot":
+            self._load_shot_state()
         self._catch_entries = 0
         self._catch_idle_frames = self.CATCH_ENTRY_GAP_FRAMES
         self._saucer_visits = 0

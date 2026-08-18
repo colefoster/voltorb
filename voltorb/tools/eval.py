@@ -121,7 +121,7 @@ def main() -> None:
                     help="path, or 'random' for the baseline; repeatable")
     ap.add_argument("--rom", default="roms/pokemon_pinball.gbc")
     ap.add_argument("--stage", default="dex",
-                    choices=["survive", "score", "dex", "saucer", "catch"],
+                    choices=["survive", "score", "dex", "saucer", "catch", "shot"],
                     help="only affects reward bookkeeping, not the reported metrics")
     ap.add_argument("--episodes", type=int, default=20)
     ap.add_argument("--num-envs", type=int, default=8)

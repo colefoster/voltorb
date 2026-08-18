@@ -260,12 +260,66 @@ class CatchReward(Reward):
         return reward
 
 
+class ShotReward(Reward):
+    """Sub-task stage: one shot at the saucer, ~400 frames, and the episode ends when it
+    resolves.
+
+    The precedent is catch-01, the only run in this project that ever produced a real result
+    (+3.2 sigma): it worked because the sub-task was short and its base rate was ~12%. This has
+    the same shape -- tools/shotsearch.py measured a 12.7% base rate over 400 frames from real
+    shot-opportunity states, and measured that the first 90 frames of action triple the hit
+    rate, so the signal is inside the episode by construction rather than thousands of frames
+    downstream of it.
+
+    Deliberately narrow: no species bonus, no score, no catch-mode progress. Reaching the
+    saucer while ready starts catch mode, and catch mode converts ~80% of the time unaided, so
+    the shot is the whole objective and everything else is noise on a 400-frame episode.
+    """
+
+    def __init__(
+        self,
+        visit_bonus: float = 10.0,
+        # ~1.0 per episode against 10 for the shot. dex-01 died of shaping worth as much as
+        # the objective; keep the ratio at 10:1 and it can only break ties.
+        proximity_weight: float = 0.003,
+        ball_lost_penalty: float = 1.0,
+        time_penalty: float = 0.0,
+    ):
+        self.visit_bonus = visit_bonus
+        self.proximity_weight = proximity_weight
+        self.ball_lost_penalty = ball_lost_penalty
+        self.time_penalty = time_penalty
+
+    def reset(self, raw, gw) -> None:
+        super().reset(raw, gw)
+        self._prev_visits = raw.get("saucer_visits", 0.0)
+
+    def step(self, raw, gw, *, ball_lost: bool) -> float:
+        reward = -self.time_penalty
+        # Gated on stage 0: current_stage indexes two different screens and the saucer only
+        # exists on one of them. Ungated, this term spends most of its budget paying for
+        # proximity to a coordinate on the wrong screen -- which is what made saucer-01 and
+        # saucer-02 null.
+        if raw["current_stage"] == 0:
+            reward += self.proximity_weight * (1.0 - min(raw["saucer_dist"], 180.0) / 180.0)
+
+        visits = raw.get("saucer_visits", 0.0)
+        if visits > self._prev_visits:
+            reward += self.visit_bonus * (visits - self._prev_visits)
+            self._prev_visits = visits
+
+        if ball_lost:
+            reward -= self.ball_lost_penalty
+        return reward
+
+
 _STAGES = {
     "survive": SurviveReward,
     "score": ScoreReward,
     "dex": DexReward,
     "saucer": SaucerReward,
     "catch": CatchReward,
+    "shot": ShotReward,
 }
 
 

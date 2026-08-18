@@ -1,5 +1,13 @@
 from .pinball_env import OBS_FIELDS, OBS_DIM, EnvConfig, PinballEnv
-from .rewards import DexReward, Reward, SaucerReward, ScoreReward, SurviveReward, make_reward
+from .rewards import (
+    DexReward,
+    Reward,
+    SaucerReward,
+    ScoreReward,
+    ShotReward,
+    SurviveReward,
+    make_reward,
+)
 
 __all__ = [
     "OBS_DIM",
@@ -10,6 +18,7 @@ __all__ = [
     "Reward",
     "ScoreReward",
     "SaucerReward",
+    "ShotReward",
     "SurviveReward",
     "make_reward",
 ]
