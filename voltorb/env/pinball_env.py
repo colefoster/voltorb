@@ -305,6 +305,7 @@ class PinballEnv(gym.Env):
         }
 
     CATCH_ENTRY_GAP_FRAMES = 180
+    LAUNCH_TOGGLE_FRAMES = 15  # half-period of the A toggle that produces a launch edge
     SAUCER_RADIUS = 2.0
     SAUCER_DWELL_FRAMES = 5  # the ball is held in the saucer, so a real visit is not a graze
 
@@ -364,8 +365,22 @@ class PinballEnv(gym.Env):
             )
         self._held = action
 
+    def _launch_action(self, action: int) -> int:
+        """Override the policy's action to toggle A while the ball is still in the plunger.
+
+        Must run BEFORE the tick: applying it afterwards means the next step's action releases
+        A before the emulator ever advances a frame with it down, so the press is invisible and
+        the ball never launches -- which is exactly what happened to every fixed action.
+        """
+        keep_left = action in (ACTION_LEFT, ACTION_BOTH)
+        if (self._frames // self.LAUNCH_TOGGLE_FRAMES) % 2:
+            return ACTION_BOTH if keep_left else ACTION_RIGHT
+        return ACTION_LEFT if keep_left else ACTION_NONE
+
     def step(self, action):
         action = int(action)
+        if not self._launched and self._frames >= self.config.launch_grace_frames:
+            action = self._launch_action(action)
         self._apply_action(action)
 
         prev_balls_left = self.gw.balls_left
@@ -380,30 +395,25 @@ class PinballEnv(gym.Env):
         self._frames += self.config.frame_skip
 
         # A also launches the ball, and until it is launched nothing in the game advances:
-        # stage stays 1, the ball sits frozen in the plunger, score stays 0. If the policy
-        # has not pressed A within the grace window, keep pressing it until the game starts.
+        # stage stays 1, the ball sits frozen in the plunger, score stays 0.
+        #
+        # **Launching needs a press EDGE, not a held button.** Measured: with A held from
+        # before the serve, every fixed action -- including ACTION_RIGHT and ACTION_BOTH,
+        # which hold A forever -- sits at stage 1 with score 0 for 3,000 frames, while a
+        # random policy launches at frame 40. So the fallback toggles A on a 15-frame duty
+        # cycle instead of pressing it, and routes through _apply_action so `_held` stays
+        # truthful. (Going through the emulator directly is what desynced them: a bare
+        # pyboy.button("a", 5) queues a release 5 frames later while _apply_action still
+        # believes A is down, which can leave the right flipper
+        # released-but-believed-held for the rest of the episode -- a silent two-action
+        # space. A bare button_press generates no edge at all when A is already held.)
         #
         # current_stage is the only reliable in-play signal. Ball position is NOT — the
         # coordinate bytes hold uninitialised garbage before launch (ball_y reads 152), so
         # testing ball_y > 0 latches instantly and disables this fallback entirely. That bug
         # made every greedy-policy recording an identical clip of a ball that never moved.
-        if not self._launched:
-            if self.gw.current_stage == 0:
-                self._launched = True
-            elif (
-                self._frames >= self.config.launch_grace_frames
-                and self._frames % 30 < self.config.frame_skip
-            ):
-                # Declare the press through _held rather than pyboy.button("a", 5): that
-                # queues a release 5 frames later while _apply_action still believes A is
-                # down, so after one fallback press the right flipper could stay
-                # released-but-believed-held for the rest of the episode, silently cutting
-                # the action space to two states. Holding it here keeps the two in sync --
-                # _apply_action releases it on the next step if the policy wants it up.
-                self.pyboy.button_press(RIGHT_FLIPPER_BUTTON)
-                self._held = (
-                    ACTION_BOTH if self._held in (ACTION_LEFT, ACTION_BOTH) else ACTION_RIGHT
-                )
+        if not self._launched and self.gw.current_stage == 0:
+            self._launched = True
 
         raw = self._raw_state()
         self._count_events(raw)

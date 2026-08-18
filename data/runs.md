@@ -4,7 +4,7 @@ One line of hypothesis per run. Newest first.
 
 | run | stage | steps | hypothesis | result |
 |---|---|---|---|---|
-| `saucer-03` | saucer | 20M | Both earlier saucer runs paid the distance term **ungated by stage**, and `current_stage` indexes two different screens: over 121,752 frames the ball is at (124,120) in 1,437 frames of stage 0 and **zero** frames of stage 1, all visits and entries are stage 0, and stage 1 is **69% of all frames**. So most of the shaping budget paid for proximity to a coordinate on the wrong screen. Same as `saucer-02` with the raw term gated on `current_stage == 0` and the weight raised 0.002 -> 0.005 to keep ~20/episode through a 31% duty cycle. Deciding metric `saucer_visits/ep` vs random 2.11 +- 0.10. | _pending_ |
+| `saucer-03` | saucer | 20M | Both earlier saucer runs paid the distance term **ungated by stage**, and `current_stage` indexes two different screens: over 121,752 frames the ball is at (124,120) in 1,437 frames of stage 0 and **zero** frames of stage 1, all visits and entries are stage 0, and stage 1 is **69% of all frames**. So most of the shaping budget paid for proximity to a coordinate on the wrong screen. Same as `saucer-02` with the raw term gated on `current_stage == 0` and the weight raised 0.002 -> 0.005 to keep ~20/episode through a 31% duty cycle. Deciding metric `saucer_visits/ep` vs random 2.11 +- 0.10. | **null, and it is the clearest null of the three.** 100 episodes per arm, torch now seeded per arm: `saucer_visits` **2.40 vs random 2.11 = +1.2 sigma**, `catch_entries` 1.24 +- 0.08 vs 1.05 +- 0.07 = **+1.8 sigma**, dex/game 1.00 +- 0.09 vs 0.79 +- 0.06 = +1.9 sigma, `dex>=1` 70% vs 69%, frames 20,270 vs 17,871 (**+13%**). Everything points the right way and nothing clears 2 sigma. **Normalise by frames and the gain vanishes:** visits per 10,000 frames 1.18 for saucer-03 and 1.18 for random; entries per 10,000 frames 0.61 vs 0.59. The gate fix was real and correct, and it bought episode length, not aim. |
 | `saucer-02` | saucer | 20M | `saucer-01` moved `catch_entries` +1.7 sigma but `saucer_visits` **not at all** (-0.4 sigma), so the potential-based distance term did not make it aim. PBRS is policy-invariant by construction and telescopes to ~phi(end)-phi(start) per episode; the one shaping term this project has ever gotten to work (ball height, `survive-03`) is a **raw** per-frame state term. Same setup, `saucer_shaping="raw"`: +0.002 per frame times proximity to the saucer, ~22/episode against 100 per entry and 300 per species. Hovering near the saucer is not farming here -- it is the precondition. Deciding metric `saucer_visits/ep` (random 2.11 +- 0.10). | **null, marginally negative.** 100 episodes per arm: `saucer_visits` **2.04 vs random 2.11 = -0.3 sigma**, `catch_entries` 0.96 +- 0.07 vs 1.05 +- 0.07 = **-1.0 sigma**, dex/game 0.73 vs 0.79, `dex>=1` 59% vs 69%, frames 17,706 vs 17,871 (flat). Raw proximity shaping did not make it aim either -- and unlike `saucer-01` it did not even buy retention. Cause found afterwards and it is a defect, not a ceiling: the term was ungated by stage, so ~69% of what it paid was proximity on a screen where the saucer does not exist. See `saucer-03`. |
 | `saucer-01` | saucer | 20M | Catch mode is one shot: the ball at rest in the saucer at `(124,120)` while `0xD532 == 128`. Random gets 1.55 visits/ep and 0.88 entries/ep. Given `catch_ready` plus the ball's offset to the saucer in the observation, and potential-based shaping on distance to it (+100 per catch-mode entry, species 300, no in-mode progress bonus), the agent should aim. From scratch: the obs changed, and the survive/score warm start buys ball-holding, not aiming. Deciding metric `catch_entries/ep` over 100 episodes vs a matched random arm; success >= 1.5 at >=3 sigma, kill if inside 2 sigma of 0.88 at 10M. | **null on the deciding metric, and it says something specific.** Ran 20M/20M with no crash (first completed run since `033e2ef`). 100 episodes per arm, matched: `catch_entries` **1.22 +- 0.07 vs random 1.05 +- 0.07 = +1.7 sigma**, `saucer_visits` **2.03 vs 2.11 = -0.4 sigma**, dex/game 0.91 +- 0.08 vs 0.79 +- 0.06 = +1.2 sigma, `dex>=1` 71% vs 69%. Frames 20,469 vs 17,871 (+15%). So it learned ball retention *again* -- the one thing every run learns -- and the extra catch entries are the longer episodes, not aim: **visits per episode did not move at all.** The dense potential-based distance signal did not produce aiming. |
 | `dex-03` | dex | 40M | Fine-tune `catch-01` on the full game. The catch skill is real but does not transfer, so the missing step is keeping it while learning to *reach* catch mode. 12 envs, not 16, since both mid-flight crashes used 16. | **null, and it crashed too** — stopped at 19.8M/40M, a third mid-flight crash. 40-episode eval: dex/game **0.88 +- 0.09 vs random 0.88 +- 0.11 = +0.0 sigma**, dead flat. `dex>=1` 78% vs 72%. Survival regressed: 16,775 frames vs random's 19,245. Entropy had collapsed to 0.32 (max 1.386), so the policy went nearly deterministic and bought nothing for it. The catch skill still does not transfer, and fine-tuning on the full game is not the missing step. |
@@ -235,6 +235,55 @@ mattered:
    `_held`.
 6. **`dex_caught_frac` was a dead input** (`/151` put one catch at 0.0066 against features of
    order 0.5). Now `dex_caught / 8`.
+
+### Is the shot aimable at all? Unresolved, and the next thing to settle
+
+Three trained runs move episode length and leave the rate alone. So the rate was attacked
+without any learning involved -- thirteen hand-written policies, scored on saucer visits per
+10,000 frames against random's 1.23:
+
+| policy | frames/ep | visits/10k | entries/10k |
+|---|---|---|---|
+| random | 17,289 | **1.23** | 0.55 |
+| flip only on stage 0 | 17,576 | 1.07 | 0.64 |
+| random, right-biased | 17,344 | 1.06 | 0.70 |
+| hold flippers up while ball low (4 variants) | 30,000 (truncated) | 0.00 | 0.00 |
+| 3-frame tap on ball-low (6 variants) | 5,522-30,000 | 0.00 | 0.00 |
+
+**Nothing beat random.** Two findings inside that, both about the env rather than the game:
+
+- **Holding the flippers up while the ball is low is a stable deadlock.** The ball rests on a
+  raised flipper, stays low, the policy keeps holding, and the episode runs to `max_frames`
+  with zero events. This is a live hazard for training: a cradling policy earns a long episode
+  and, under per-frame proximity shaping, gets paid for it. `saucer-03` did not fall in
+  (20,270 frames/ep against a 108,000 cap), but an `ep_len` pinned at `max_frames` means this.
+- **The tap policies got zero visits because they keep the ball alive far worse than random**
+  (5,522 frames/ep against 17,289), not because they aimed badly. Visits need a live ball
+  bouncing in the upper field, so a policy that flips rarely never gets there. That makes this
+  sweep evidence about survival, **not** evidence that aiming is impossible.
+
+So the honest position is: **no policy, learned or hand-written, has raised the rate -- and the
+aim question is still open**, because every policy that raised it would first have to match
+random's ball retention. The cheap instrument that settles it is a human: `tools/play.py`
+scores a human game on exactly the same counters. If a human clears ~1.2 visits/10k the shot is
+aimable and this is a credit-assignment problem for a different algorithm; if a human lands
+near 1.2 as well, catch mode is luck given time on the table, dex/game is survival x luck, and
+maximising frames -- which every run already learns -- is close to optimal for RAM + flippers.
+
+### Two launch bugs, one of them introduced this session
+
+- **Launching needs a press EDGE, not a held button.** Measured: with A held from before the
+  serve, every fixed action -- including the two that hold A forever -- sits at stage 1 with
+  score 0 for 3,000 frames, while a random policy launches at frame 40. An input sweep
+  confirms only A launches (frame 50 as a tap; A toggled at 2/4/8-frame periods launches at
+  frames 32-38). `README.md`'s "the 4-action space can launch unaided" is true only for
+  policies that generate A edges, i.e. stochastic ones.
+- **The fallback was applied after the tick**, so the next step's action released A before the
+  emulator advanced a frame with it down and the press was invisible. Fixed by overriding the
+  action *before* the tick and toggling A on a 15-frame duty cycle through `_apply_action`, so
+  `_held` stays truthful. All four fixed actions now launch at frame 165. **This never affected
+  a training run** -- policies with entropy 1.1-1.3 launch at ~frame 40 -- but it silently
+  invalidated the first scripted-policy sweep, and it would invalidate any greedy-policy eval.
 
 ### The known ceiling
 

@@ -24,12 +24,16 @@ byte-matching build). ROMs are gitignored and never committed.
 | Episode | One game (3 balls) from a fresh save, so the Pokédex starts empty |
 | Curriculum | `survive` → `score` → `dex` → `saucer`, weights carried forward |
 | Algorithm | PPO, single-file, ~8 vectorized envs |
-| Headline metric | catch-mode entries per game (random: 0.88) |
+| Headline metric | catch-mode entries **per 10,000 frames** (random: 0.55) |
 
 The done bar used to be "≥1 new species per game in ≥90% of games". It is **retired**: a
 uniform random policy clears it 72–78% of the time, so it measured the game's generosity
-rather than the agent. Judge on catch-mode entries per game, and report dex/game as the
-consequence.
+rather than the agent.
+
+**Judge on rates, not per-episode counts.** Every policy trained here buys survival time,
+which buys more chances at the objective without improving the chance per frame — and that
+confound has absorbed three experiments. `saucer-03` reads +1.9σ on dex/game and exactly 0.00σ
+on saucer visits per 10,000 frames. `tools/eval.py` reports both.
 
 ## Measured facts
 
@@ -63,7 +67,14 @@ Everything here came out of `tools/validate.py`; none of it is documented anywhe
   until `special_mode_active` goes 1, its bit count tracks `catch_tiles_flipped`, and its bits
   blink as an animation several times a second — unusable as a reward signal.
 - `start_game()` leaves the game **pre-launch**; **A** launches the ball and also serves as
-  the right flipper, so the 4-action space can launch unaided.
+  the right flipper. But launching needs a press **edge**, not a held button: a policy that
+  holds A from before the serve never launches at all (measured: every fixed action sits at
+  stage 1, score 0, for 3,000 frames, while a random policy launches at frame 40). So the
+  4-action space can launch unaided only if the policy is stochastic; the env toggles A on a
+  15-frame duty cycle after a grace window to cover deterministic ones.
+- **Holding both flippers up while the ball is low is a stable deadlock** — the ball rests on
+  a raised flipper, stays low, and a policy that keeps holding never loses it. Episodes run to
+  `max_frames` with zero events. Watch for `ep_len` pinned at the cap.
 - **Pokémon Pinball GBC has no tilt/nudge mechanic** — no such address exists in the ROM
   map, which is why flippers alone are the complete action set.
 

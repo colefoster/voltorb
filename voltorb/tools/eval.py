@@ -35,6 +35,12 @@ def evaluate(checkpoint: str, args) -> dict:
         ],
         autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
     )
+    # Seed torch too, not just numpy: the policy arms sample their actions from torch's
+    # global RNG, so without this an arm's result depends on how many arms ran before it in
+    # the same process -- saucer-01 measured 1.22 catch entries alone and 1.12 in a three-arm
+    # invocation. Matched evals are the whole point of this tool.
+    torch.manual_seed(args.seed)
+
     model = None
     if checkpoint != "random":
         model = ActorCritic()
@@ -99,6 +105,13 @@ def evaluate(checkpoint: str, args) -> dict:
         "entries_mean": get("catch_entries").mean(),
         "entries_stderr": get("catch_entries").std(ddof=1) / np.sqrt(len(e)),
         "slots_entered_mean": get("slots_entered").mean(),
+        # Per-episode counts are confounded by episode length, and that confound has eaten
+        # three experiments: every policy this project has trained buys survival time, which
+        # buys more chances at the saucer without ever raising the chance per frame. The rate
+        # is the honest version. Ratio of means, not mean of ratios -- short episodes would
+        # otherwise dominate.
+        "visit_rate": get("visits").sum() / get("frames").sum() * 10_000.0,
+        "entry_rate": get("catch_entries").sum() / get("frames").sum() * 10_000.0,
     }
 
 
@@ -123,6 +136,7 @@ def main() -> None:
     print(
         f"\n{'checkpoint':26s} {'n':>3s} {'frames +- se':>19s} "
         f"{'visits':>7s} {'catchmd +- se':>15s} "
+        f"{'vis/10k':>8s} {'ent/10k':>8s} "
         f"{'dex/game +- se':>17s} {'dex>=1':>7s}"
     )
     for r in rows:
@@ -131,6 +145,7 @@ def main() -> None:
             f"{r['frames_mean']:11,.0f} +-{r['frames_stderr']:6,.0f} "
             f"{r['visits_mean']:7.2f} "
             f"{r['entries_mean']:9.2f} +-{r['entries_stderr']:4.2f} "
+            f"{r['visit_rate']:8.2f} {r['entry_rate']:8.2f} "
             f"{r['dex_mean']:10.2f} +-{r['dex_stderr']:5.2f} "
             f"{r['dex_hit_rate']:6.0f}%"
         )
