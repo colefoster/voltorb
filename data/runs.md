@@ -236,7 +236,44 @@ mattered:
 6. **`dex_caught_frac` was a dead input** (`/151` put one catch at 0.0066 against features of
    order 0.5). Now `dex_caught / 8`.
 
-### Is the shot aimable at all? Unresolved, and the next thing to settle
+### The shot IS controllable (2026-08-18, `tools/shotsearch.py`)
+
+Settled without a human and without learning, using savestates. From a real in-play state with
+the saucer ready, run 32 random 400-frame action sequences; take the ones that reached the
+saucer, keep only their first N actions, and replay those with **fresh** randomness after.
+32 states sampled, 15 produced at least one hit:
+
+| replayed prefix | retest hit rate | vs state-matched base 0.127 |
+|---|---|---|
+| 30 frames (0.5 s) | 0.194 | **+2.8 sigma** |
+| 90 frames (1.5 s) | 0.379 | **+9.0 sigma** |
+| 200 frames (3.3 s) | 0.575 | +14.6 sigma |
+
+**The first 90 frames of action triple the chance of reaching the saucer.** The information is
+in the action sequence, so the shot is aimable and this is a credit-assignment / exploration
+problem -- not the ceiling of RAM-only observation. (200 of a 400-frame horizon is half the
+rollout fixed, so read 30 and 90; those are far from trivial replay and both clearly positive.)
+
+**The baseline nearly produced the opposite answer.** Prefix retests only exist for states that
+produced a winner, and those states are favourable by selection -- 10 of 22 states in the first
+run hit 0/32 whatever the actions. Against the base rate pooled over *all* states the first run
+read **+2.0 sigma "controllable"**; against the same states it read **-0.6 sigma**. The tool now
+reports only the state-matched comparison. A selection-biased baseline is the same class of
+error as the duration-read-as-frequency one that started this whole detour.
+
+### What this makes the next experiment
+
+A **saucer sub-task**, and the precedent is exact. `catch-01` is the only thing that ever
+trained (+3.2 sigma) and it worked because the sub-task had a short horizon and a base rate
+around 12%. A shot sub-task has the same shape: reset from a sampled shot-opportunity
+savestate (in play, stage 0, saucer ready), episode of ~400 frames, reward the saucer visit,
+**base rate 12.7% measured**. Everything that made the full game hopeless -- 17,000-frame
+episodes, one opportunity per game, credit spanning thousands of frames -- is gone.
+
+The alternative, and they compose: `shotsearch` already generates winning action prefixes, so
+those are demonstrations. Seed a replay buffer or behaviour-clone them before fine-tuning.
+
+### The earlier scripted-policy sweep, and why it proved less than it looked
 
 Three trained runs move episode length and leave the rate alone. So the rate was attacked
 without any learning involved -- thirteen hand-written policies, scored on saucer visits per
