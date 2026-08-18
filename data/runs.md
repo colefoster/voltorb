@@ -4,7 +4,7 @@ One line of hypothesis per run. Newest first.
 
 | run | stage | steps | hypothesis | result |
 |---|---|---|---|---|
-| `dex-03` | dex | 40M | Fine-tune `catch-01` on the full game. The catch skill is real but does not transfer, so the missing step is keeping it while learning to *reach* catch mode. 12 envs, not 16, since both mid-flight crashes used 16. | running |
+| `dex-03` | dex | 40M | Fine-tune `catch-01` on the full game. The catch skill is real but does not transfer, so the missing step is keeping it while learning to *reach* catch mode. 12 envs, not 16, since both mid-flight crashes used 16. | **null, and it crashed too** — stopped at 19.8M/40M, a third mid-flight crash. 40-episode eval: dex/game **0.88 +- 0.09 vs random 0.88 +- 0.11 = +0.0 sigma**, dead flat. `dex>=1` 78% vs 72%. Survival regressed: 16,775 frames vs random's 19,245. Entropy had collapsed to 0.32 (max 1.386), so the policy went nearly deterministic and bought nothing for it. The catch skill still does not transfer, and fine-tuning on the full game is not the missing step. |
 | `catch-01` | catch | 50M | Warm-started from `score-01`. Train the catch sub-task in isolation: every episode starts inside a forced catch attempt and ends when it resolves. Random baseline is 12% catch rate over ~1,965-frame episodes, so there is finally a gradient. | **WORKS (+3.2 sigma).** Crashed at 26M/50M but the checkpoint holds: catch rate **0.20 +- 0.02 vs random 0.12 +- 0.02** over 400 episodes each, a 67% relative gain. First statistically real result on the objective. |
 | `dex-02` | dex | 50M | Rebalanced: new species 300 (was 100), catch progress 2.0 (was 0.5), height 0.001 (was 0.01), score off. dex-01's shaping paid ~100/episode against 100 for a whole species, so the objective was drowned. | **null again, stopped at 31M/50M.** dex/game 0.82 +- 0.10 vs random 0.94 +- 0.07 = -0.9 sigma, i.e. slightly worse. `dex>=1` 61% vs 78%. The reward-balance hypothesis is disproven: 3x the species bonus with shaping off changed nothing. |
 | `dex-01` | dex | 50M | Warm-started from `score-01`. The real objective: reward only species not already in the Pokedex this episode. Target is dex/game clearly above random's 0.67. | **null result.** dex/game 1.05 +- 0.09 vs random 0.94 +- 0.07 = +1.0 sigma, indistinguishable. `dex>=1` 76% vs random's 78%. Training showed `game/dex_caught` rising 0.75 -> 0.99 but that was the rolling window, not a real gain. |
@@ -13,6 +13,17 @@ One line of hypothesis per run. Newest first.
 | `survive-01` | survive | 50M | Frame-level 4-action control learns ball retention from 26 RAM floats. | **failed — no learning.** Entropy 1.385 -> 1.381 (max is ln 4 = 1.386), i.e. still uniform random after 50M steps. `ep_len` 17.9k -> 19.4k is noise. Cause: `ent_coef=0.01` overwhelmed a weak advantage signal, and the constant `+0.01`/frame alive bonus was information-free. |
 
 ## Established facts
+
+- **The random baseline has to be measured at the same n as the thing it judges.** Quoted at
+  0.67, 0.88 and 0.94 dex/game in different entries above, purely from episode count. The
+  40-episode number is 0.88 +- 0.11; treat smaller ones as noise.
+- **`score-01`'s dex advantage was small-sample noise.** Recorded above as 1.00/game vs
+  random 0.67 over 24 episodes. Re-run at 40 episodes against a matched baseline it is
+  **0.75 +- 0.11 vs 0.88 +- 0.11 = -0.8 sigma** — indistinguishable, and pointing the wrong
+  way. Nothing has beaten random on the dex objective yet; only `catch-01`, on the isolated
+  sub-task, has beaten anything.
+- **The done bar is still unmet.** It is >=1 new species in >=90% of games. Best measured is
+  78%.
 
 - Baseline to beat: **16,891 frames/episode** (random policy, `tools/validate.py`).
 - **A constant per-frame reward cannot train anything.** It is identical in every state and
