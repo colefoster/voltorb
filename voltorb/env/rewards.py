@@ -1,4 +1,4 @@
-"""Curriculum reward stages: survive -> score -> dex.
+"""Curriculum reward stages: survive -> score -> dex -> saucer.
 
 Each stage is a superset of the one before it, so a policy trained on an earlier stage
 transfers its weights forward instead of starting over.
@@ -115,13 +115,80 @@ class DexReward(ScoreReward):
             reward += self.evolution_bonus * (evolutions - self._prev_evolutions)
             self._prev_evolutions = evolutions
 
-        # Pay for progress *inside* catch mode, not for entering it. Validation showed a
-        # random policy is already in a special mode 58% of the time, so an entry bonus is
-        # free money the agent would farm instead of finishing a catch.
+        # Pay for progress *inside* catch mode. NOTE: the original justification for never
+        # paying for mode ENTRY was wrong -- "a random policy is in a special mode ~32-58%
+        # of frames" is a duration statistic, one ~5,000-frame attempt inside a ~17,000-frame
+        # game. Entries happen ~1.0 times per game for every policy including random, and
+        # that is the actual bottleneck. See SaucerReward.
         progress = raw["catch_tiles_flipped"] + raw["mon_hits"]
         if progress > self._prev_progress:
             reward += self.catch_progress_bonus * (progress - self._prev_progress)
         self._prev_progress = progress
+
+        return reward
+
+
+class SaucerReward(DexReward):
+    """Stage 4: pay for aiming at the one spot that starts a catch attempt.
+
+    Measured (see pinball_env.ADDR_CATCH_READY): catch mode starts when the ball comes to
+    rest in the saucer at (124, 120) while 0xD532 == 128, which it is at the start of every
+    episode. A random policy gets 1.55 saucer visits per episode, 0.88 of them while ready,
+    and ~80% of those become a catch with no further help. So the entire objective reduces to
+    one aiming problem, and for the first time there is a signal available on every frame:
+    distance from the ball to a fixed target.
+
+    The distance term is potential-based -- gamma * phi(s') - phi(s) with phi = -dist -- so it
+    is policy-invariant: it cannot be farmed by hovering near the saucer without entering it,
+    which a raw -distance-per-frame term would pay for indefinitely. The height term from the
+    earlier stages stays tiny and only to keep the ball alive long enough to aim.
+    """
+
+    def __init__(
+        self,
+        saucer_weight: float = 2.0,
+        catch_mode_bonus: float = 100.0,
+        gamma: float = 0.999,
+        catch_progress_bonus: float = 0.0,
+        height_weight: float = 0.001,
+        **kwargs,
+    ):
+        super().__init__(
+            catch_progress_bonus=catch_progress_bonus, height_weight=height_weight, **kwargs
+        )
+        self.saucer_weight = saucer_weight
+        self.catch_mode_bonus = catch_mode_bonus
+        self.gamma = gamma
+
+    @staticmethod
+    def _potential(raw) -> float:
+        """-normalised distance to the saucer, ungated on purpose.
+
+        Gating this on catch_ready / in-play / not-in-mode was tried and is worse than
+        useless: every time a gate flips, phi jumps to 0, and since phi is otherwise negative
+        that hands out up to +2 reward for *losing the ball* -- twice the ball-lost penalty.
+        Ungated, the only discontinuities are real teleports (the ball being served), which
+        are bounded and rare. The policy sees catch_ready in the observation, so it can learn
+        for itself when the shot is worth taking.
+        """
+        return -min(raw["saucer_dist"], 180.0) / 180.0
+
+    def reset(self, raw, gw) -> None:
+        super().reset(raw, gw)
+        self._prev_potential = self._potential(raw)
+        self._prev_entries = raw.get("catch_entries", 0.0)
+
+    def step(self, raw, gw, *, ball_lost: bool) -> float:
+        reward = super().step(raw, gw, ball_lost=ball_lost)
+
+        potential = self._potential(raw)
+        reward += self.saucer_weight * (self.gamma * potential - self._prev_potential)
+        self._prev_potential = potential
+
+        entries = raw.get("catch_entries", 0.0)
+        if entries > self._prev_entries:
+            reward += self.catch_mode_bonus * (entries - self._prev_entries)
+            self._prev_entries = entries
 
         return reward
 
@@ -177,6 +244,7 @@ _STAGES = {
     "survive": SurviveReward,
     "score": ScoreReward,
     "dex": DexReward,
+    "saucer": SaucerReward,
     "catch": CatchReward,
 }
 

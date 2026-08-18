@@ -67,7 +67,7 @@ def check_fields(frames: int, seed: int = 0) -> None:
         notes = []
         if rawvals.min() == rawvals.max():
             notes.append("DEAD (constant)")
-        if clipped > 5.0 and name not in BOUNDED_FIELDS:
+        if clipped > 5.0 and name not in BOUNDED_FIELDS and not name.startswith("tile_"):
             notes.append("SATURATED - rescale")
         if rawvals.min() < 0:
             notes.append("signed")

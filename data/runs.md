@@ -4,6 +4,7 @@ One line of hypothesis per run. Newest first.
 
 | run | stage | steps | hypothesis | result |
 |---|---|---|---|---|
+| `saucer-01` | saucer | 20M | Catch mode is one shot: the ball at rest in the saucer at `(124,120)` while `0xD532 == 128`. Random gets 1.55 visits/ep and 0.88 entries/ep. Given `catch_ready` plus the ball's offset to the saucer in the observation, and potential-based shaping on distance to it (+100 per catch-mode entry, species 300, no in-mode progress bonus), the agent should aim. From scratch: the obs changed, and the survive/score warm start buys ball-holding, not aiming. Deciding metric `catch_entries/ep` over 100 episodes vs a matched random arm; success >= 1.5 at >=3 sigma, kill if inside 2 sigma of 0.88 at 10M. | _pending_ |
 | `dex-03` | dex | 40M | Fine-tune `catch-01` on the full game. The catch skill is real but does not transfer, so the missing step is keeping it while learning to *reach* catch mode. 12 envs, not 16, since both mid-flight crashes used 16. | **null, and it crashed too** — stopped at 19.8M/40M, a third mid-flight crash. 40-episode eval: dex/game **0.88 +- 0.09 vs random 0.88 +- 0.11 = +0.0 sigma**, dead flat. `dex>=1` 78% vs 72%. Survival regressed: 16,775 frames vs random's 19,245. Entropy had collapsed to 0.32 (max 1.386), so the policy went nearly deterministic and bought nothing for it. The catch skill still does not transfer, and fine-tuning on the full game is not the missing step. |
 | `catch-01` | catch | 50M | Warm-started from `score-01`. Train the catch sub-task in isolation: every episode starts inside a forced catch attempt and ends when it resolves. Random baseline is 12% catch rate over ~1,965-frame episodes, so there is finally a gradient. | **WORKS (+3.2 sigma).** Crashed at 26M/50M but the checkpoint holds: catch rate **0.20 +- 0.02 vs random 0.12 +- 0.02** over 400 episodes each, a 67% relative gain. First statistically real result on the objective. |
 | `dex-02` | dex | 50M | Rebalanced: new species 300 (was 100), catch progress 2.0 (was 0.5), height 0.001 (was 0.01), score off. dex-01's shaping paid ~100/episode against 100 for a whole species, so the objective was drowned. | **null again, stopped at 31M/50M.** dex/game 0.82 +- 0.10 vs random 0.94 +- 0.07 = -0.9 sigma, i.e. slightly worse. `dex>=1` 61% vs 78%. The reward-balance hypothesis is disproven: 3x the species bonus with shaping off changed nothing. |
@@ -14,6 +15,26 @@ One line of hypothesis per run. Newest first.
 
 ## Established facts
 
+- **RETRACTED: "a random policy is in a special mode ~32% (or 58%) of frames, so entering
+  catch mode is easy and finishing it is the hard part."** That is a duration statistic read
+  as a frequency: one ~5,000-frame catch attempt inside a ~17,000-frame game. Catch-mode
+  entries happen **~0.9 times per game, for every policy ever trained including uniform
+  random.** The inverted claim was written into `rewards.py` as "reward in-mode progress,
+  never mode entry" and steered `dex-01`, `dex-02`, `dex-03` and `catch-01` -- four nulls
+  aimed at the wrong end of the chain.
+- **The chain is one shot, measured 2026-08-18.** `0xD532 == 128` means catch mode is ready;
+  it is 128 on the first frame of every episode and drops to 0 the instant catch mode starts.
+  Catch mode begins when the ball comes to rest in the saucer at ball position `(124, 120)`.
+  Of 31 saucer visits, **all 16 while ready started catch mode and all 15 while not ready did
+  not** -- perfect separation. Random: **1.55 saucer visits/ep, 0.88 catch-mode entries/ep,
+  ~80% of entries end in a catch unaided** (`catch_tiles_flipped` maxes out in every attempt).
+- **The roulette slots are not the trigger.** Similar rate (1.0-1.5 entered/game) but no
+  causal relation: measured catch-mode entries happen with zero slots opened, and slot events
+  land thousands of frames from mode entry. A planned `slot` experiment was built and then
+  abandoned before it ran, on this measurement.
+- **`0xD586` (48-byte "tile illumination") is downstream of the bottleneck.** All zeros until
+  `special_mode_active` goes 1, bit count tracks `catch_tiles_flipped`, and its bits blink as
+  an animation -- a per-bit reward would have paid for the blink, not for progress.
 - **The random baseline has to be measured at the same n as the thing it judges.** Quoted at
   0.67, 0.88 and 0.94 dex/game in different entries above, purely from episode count. The
   40-episode number is 0.88 +- 0.11; treat smaller ones as noise.
@@ -22,8 +43,10 @@ One line of hypothesis per run. Newest first.
   **0.75 +- 0.11 vs 0.88 +- 0.11 = -0.8 sigma** — indistinguishable, and pointing the wrong
   way. Nothing has beaten random on the dex objective yet; only `catch-01`, on the isolated
   sub-task, has beaten anything.
-- **The done bar is still unmet.** It is >=1 new species in >=90% of games. Best measured is
-  78%.
+- **The done bar is retired, not unmet.** ">=1 new species in >=90% of games" is cleared
+  72-78% of the time by a uniform random policy, so it measured the game rather than the
+  agent. The headline metric is now **catch-mode entries per game** (random 0.88 +- 0.19 at
+  n=8, 1.00 including a re-arm); dex/game is its noisy, floor-limited consequence.
 
 - Baseline to beat: **16,891 frames/episode** (random policy, `tools/validate.py`).
 - **A constant per-frame reward cannot train anything.** It is identical in every state and
@@ -183,3 +206,49 @@ finishing a catch** -- the agent demonstrably does that better than chance now -
 Next: `dex-03` fine-tunes the catch-trained weights on the full game, which is the curriculum
 step that was missing. If that also fails to move dex/game, the honest follow-up is a
 sub-task for *entering* catch mode, rewarding the shots that trigger it.
+
+## What was actually wrong (2026-08-18)
+
+The chain was measured end to end instead of assumed. Findings, in order of how much they
+mattered:
+
+1. **The founding fact was inverted** (see Established facts). Entering catch mode is the hard
+   part; finishing it is free. Four runs were shaped at the free end.
+2. **The trigger is a single fixed shot.** Ball at rest at `(124, 120)` while `0xD532 == 128`.
+   Neither the readiness byte nor the ball's offset to that spot was in the observation, so
+   the agent was asked to hit a target it could not see, for a payout it was never given.
+3. **The roulette-slot chain in the previous handoff was a coincidence**, and `0xD586`
+   ("tile illumination") is the in-mode animation, not the upstream light state. Both were
+   about to be built into a reward; measurement killed the experiment before it ran.
+4. **`catch-01` trained on a distribution that does not exist.** `start_catch_mode(
+   unlimited_time=True)` never sets `ADDR_TIMER_ACTIVE`, so `timer_active` and
+   `timer_remaining` were frozen at values seen in 0% of real attempts -- two of the
+   observation's inputs were systematically wrong for that whole run. The `catch` stage is
+   left in place but should not be built on until this is fixed.
+5. **A silent action-space bug.** The launch fallback called `pyboy.button("a", 5)`, which
+   queues a release 5 frames later, while `_apply_action` still believed A was held. After one
+   fallback press the right flipper could stay released-but-believed-held for the rest of the
+   episode, cutting the action space to two states. Triggers whenever the policy fails to
+   press A within 120 frames -- common early in training. Fixed by declaring the press through
+   `_held`.
+6. **`dex_caught_frac` was a dead input** (`/151` put one catch at 0.0066 against features of
+   order 0.5). Now `dex_caught / 8`.
+
+### The known ceiling
+
+Arm events measured **1.62 per episode** including the one at frame 0, so catch attempts per
+episode are capped near ~1.6 unless re-arming is faster when the saucer is consumed early
+(the two episodes that re-armed had both consumed it early, so this is plausible but
+unmeasured). At ~80% conversion that projects to dex/game ~1.3. The retired 90% bar needed
+lambda ~2.9. **If `saucer-01` works, the next question is what re-arms `0xD532`.**
+
+### Crash class, closed by hardening rather than by diagnosis
+
+Three long runs died mid-flight with no logs. The memory-leak hypothesis in the previous
+handoff was disproven by measurement (per-process RSS flat across ~40 `record_video` cycles),
+and there is no macOS crash report at any of the three times. Two of three died within 16
+updates of a video, and `record_video` is the only path in the loop that boots a second PyBoy
+in the parent process and spawns ffmpeg. So: the video call is now wrapped in `try/except` and
+logged, checkpoints carry optimizer state and the update counter with `--resume-from`, and
+`env.close()` uses `pyboy.stop(save=False)` so a video no longer rewrites the `.ram` file that
+the next boot reads. Runs launch under `nohup ... | tee runs/<name>.log`.

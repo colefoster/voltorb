@@ -5,6 +5,10 @@ Curriculum use — each stage warm-starts from the previous one's checkpoint:
     uv run python -m voltorb.train.ppo --stage survive --total-steps 20_000_000
     uv run python -m voltorb.train.ppo --stage score --init-from runs/<survive-run>/final.pt
     uv run python -m voltorb.train.ppo --stage dex   --init-from runs/<score-run>/final.pt
+
+The `saucer` stage trains from scratch on purpose: it changes the observation, and the
+survive/score warm start buys ball-holding that raises frames per episode without aiming at
+anything. Deaths mid-run are cheap now -- `--resume-from runs/<name>/latest.pt`.
 """
 from __future__ import annotations
 
@@ -26,6 +30,21 @@ from voltorb.env import OBS_DIM, EnvConfig, PinballEnv
 N_ACTIONS = 4
 SCREEN_H, SCREEN_W = 144, 160
 
+# Terminal-info keys logged to TensorBoard. catch_entries is the headline: catch mode starts
+# when the ball rests in the saucer at (124,120) while the saucer is ready, ~80% of attempts
+# then produce a catch unaided, and every policy so far -- random included -- gets ~0.9
+# entries per game. Still a rolling window, so tools/eval.py remains the only thing to trust
+# for a verdict.
+TERMINAL_KEYS = (
+    "score",
+    "dex_caught",
+    "caught_in_session",
+    "saucer_visits",
+    "catch_entries",
+    "slots_opened",
+    "slots_entered",
+)
+
 
 def _env_thunk(rom: str, stage: str, frame_skip: int, seed: int) -> PinballEnv:
     # Module-level so it survives pickling into spawned worker processes.
@@ -35,7 +54,7 @@ def _env_thunk(rom: str, stage: str, frame_skip: int, seed: int) -> PinballEnv:
 
 
 class ActorCritic(nn.Module):
-    """A 26-float observation does not need depth. Two hidden layers is plenty, and keeps
+    """A 30-float observation does not need depth. Two hidden layers is plenty, and keeps
     the forward pass cheap enough that env stepping stays the bottleneck."""
 
     def __init__(self, obs_dim: int = OBS_DIM, hidden: int = 128):
@@ -116,12 +135,38 @@ def record_video(model: ActorCritic, args, path: Path, device, max_frames: int =
         env.close()
 
 
+def save_checkpoint(model, optimizer, update: int, path) -> None:
+    torch.save(
+        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "update": update},
+        path,
+    )
+
+
+def load_checkpoint(path, map_location="cpu") -> dict:
+    """Read a checkpoint in either format.
+
+    Runs up to dex-03 saved a bare state_dict; newer ones save a dict with the optimizer
+    state and update counter so a mid-flight death costs minutes instead of the run.
+    """
+    blob = torch.load(path, map_location=map_location, weights_only=False)
+    if isinstance(blob, dict) and "model" in blob:
+        return blob
+    return {"model": blob, "optimizer": None, "update": 0}
+
+
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--stage", default="survive", choices=["survive", "score", "dex", "catch"])
+    p.add_argument(
+        "--stage", default="survive", choices=["survive", "score", "dex", "saucer", "catch"]
+    )
     p.add_argument("--rom", default="roms/pokemon_pinball.gbc")
     p.add_argument("--run-name", default=None)
     p.add_argument("--init-from", default=None, help="checkpoint to warm-start from")
+    p.add_argument(
+        "--resume-from",
+        default=None,
+        help="checkpoint to resume: restores optimizer state and update counter too",
+    )
     p.add_argument("--total-steps", type=int, default=20_000_000)
     p.add_argument("--num-envs", type=int, default=8, help="8 is peak measured efficiency")
     p.add_argument("--num-steps", type=int, default=512, help="rollout length per env")
@@ -168,10 +213,18 @@ def main() -> None:
     envs = gym.wrappers.vector.RecordEpisodeStatistics(envs)
 
     model = ActorCritic().to(device)
-    if args.init_from:
-        model.load_state_dict(torch.load(args.init_from, map_location=device))
-        print(f"warm-started from {args.init_from}")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
+    first_update = 1
+    if args.init_from:
+        model.load_state_dict(load_checkpoint(args.init_from, device)["model"])
+        print(f"warm-started from {args.init_from}")
+    if args.resume_from:
+        ckpt = load_checkpoint(args.resume_from, device)
+        model.load_state_dict(ckpt["model"])
+        if ckpt["optimizer"] is not None:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        first_update = int(ckpt["update"]) + 1
+        print(f"resumed from {args.resume_from} at update {first_update}")
 
     batch_size = args.num_envs * args.num_steps
     minibatch_size = batch_size // args.num_minibatches
@@ -188,7 +241,8 @@ def main() -> None:
     next_obs = torch.as_tensor(next_obs_np, dtype=torch.float32, device=device)
     next_done = torch.zeros(args.num_envs, device=device)
 
-    global_step = 0
+    global_step = (first_update - 1) * batch_size
+    steps_this_run = 0
     start = time.time()
     # Episodes run 12k-24k frames, so completed-episode stats are rare. Keep a rolling
     # window rather than reporting per-update, which would mostly be empty.
@@ -196,13 +250,14 @@ def main() -> None:
     ep_lengths: list[float] = []
     ep_infos: list[dict] = []
 
-    for update in range(1, num_updates + 1):
+    for update in range(first_update, num_updates + 1):
         if args.anneal_lr:
             for g in optimizer.param_groups:
                 g["lr"] = args.lr * (1.0 - (update - 1.0) / num_updates)
 
         for step in range(args.num_steps):
             global_step += args.num_envs
+            steps_this_run += args.num_envs
             obs_buf[step] = next_obs
             done_buf[step] = next_done
 
@@ -228,7 +283,7 @@ def main() -> None:
             # logged nothing at all for a whole 50M-step run.
             final = infos.get("final_info")
             if final:
-                for key in ("score", "dex_caught", "caught_in_session"):
+                for key in TERMINAL_KEYS:
                     if key not in final:
                         continue
                     vals = np.asarray(final[key], dtype=np.float64)
@@ -293,7 +348,7 @@ def main() -> None:
                 nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
 
-        sps = int(global_step / (time.time() - start))
+        sps = int(steps_this_run / (time.time() - start))
         writer.add_scalar("charts/steps_per_second", sps, global_step)
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -320,18 +375,26 @@ def main() -> None:
             writer.add_scalar("charts/episodic_return", window_r, global_step)
             writer.add_scalar("charts/episodic_length", window_l, global_step)
             msg += f" | ep_return {window_r:.1f} ep_len {window_l:,.0f} (n={len(ep_returns)})"
-        for key in ("score", "dex_caught", "caught_in_session"):
-            vals = [d[key] for d in ep_infos[-20:] if key in d]
+        for key in TERMINAL_KEYS:
+            vals = [d[key] for d in ep_infos[-20 * len(TERMINAL_KEYS) :] if key in d]
             if vals:
                 writer.add_scalar(f"game/{key}", float(np.mean(vals)), global_step)
         print(msg, flush=True)
 
         if args.save_every and update % args.save_every == 0:
-            torch.save(model.state_dict(), run_dir / "latest.pt")
+            save_checkpoint(model, optimizer, update, run_dir / "latest.pt")
         if args.video_every and update % args.video_every == 0:
-            record_video(model, args, run_dir / "videos" / f"update{update:05d}.mp4", device)
+            # Guarded because this is the only path in the loop that boots a second PyBoy in
+            # the parent process and spawns ffmpeg, and three long runs died mid-flight --
+            # two of them within 16 updates of a video, with no crash report and a disproven
+            # memory-leak hypothesis. A missing clip must never cost a 30-minute run.
+            try:
+                record_video(model, args, run_dir / "videos" / f"update{update:05d}.mp4", device)
+            except Exception as exc:  # noqa: BLE001 - deliberately broad; video is optional
+                print(f"video capture failed at update {update}: {exc!r}", flush=True)
+                writer.add_text("video_error", f"update {update}: {exc!r}", global_step)
 
-    torch.save(model.state_dict(), run_dir / "final.pt")
+    save_checkpoint(model, optimizer, num_updates, run_dir / "final.pt")
     envs.close()
     writer.close()
     print(f"done -> {run_dir}")

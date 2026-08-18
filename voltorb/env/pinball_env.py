@@ -34,8 +34,33 @@ ADDR_TIMER_SECONDS = 0xD57A
 ADDR_TIMER_MINUTES = 0xD57B
 ADDR_TIMER_ACTIVE = 0xD57D
 ADDR_SPECIAL_MODE_STATE = 0xD54D
+SPECIAL_MODE_CATCH = 0  # pyboy SpecialMode.CATCH; EVOLVE=1, STAGE_CHANGE=2
 ADDR_STAGE_COLLISION_STATE = 0xD4AF
 ADDR_POKEDEX = 0xD962  # 151 bytes, one bitfield per species
+
+# What actually starts a catch attempt, measured over 20 random episodes:
+#
+#   0xD532 == 128 means catch mode is READY. It is 128 at the first frame of every episode,
+#   drops to 0 the instant catch mode starts, and re-arms later in ~40% of episodes. Mean
+#   0.56 of in-play frames are ready.
+#
+#   The trigger is the ball coming to rest in the saucer at ball position (124.0, 120.0) --
+#   identical to the pixel in every catch-mode entry observed, on both the red and the blue
+#   field. Of 31 saucer visits, all 16 that happened while ready started catch mode and all
+#   15 that happened while not ready did not: perfect separation.
+#
+# So the chain is: hit one fixed spot while ready -> catch mode -> ~80% of attempts end in a
+# catch, unaided. A random policy visits the saucer 1.55 times per episode and converts 0.8.
+# Nothing else in the chain matters, which is why every reward shaped at the downstream end
+# produced a null result.
+ADDR_CATCH_READY = 0xD532
+CATCH_READY_VALUE = 128
+SAUCER_X, SAUCER_Y = 124.0, 120.0
+
+# 0xD586 (48 bytes, "tile illumination" in PyBoy's table) is NOT the upstream lit-target
+# state it looks like. Measured: it is all zeros until special_mode_active goes 1, its bit
+# count tracks catch_tiles_flipped, and its bits blink several times a second as an
+# animation. It is downstream of the bottleneck and unusable as a reward signal.
 
 # Four actions: the flipper state to hold for this frame. Unlike press/release action
 # schemes this is stateless — the agent re-declares intent every frame, so "hold to trap"
@@ -73,8 +98,16 @@ OBS_FIELDS: tuple[str, ...] = (
     "rare_pokemon_flag",
     "catch_tiles_flipped",
     "mon_hits",
-    "dex_caught_frac",
+    # dex_caught, not dex_caught_frac: /151 put one catch at 0.0066 against features of
+    # order 0.5, an effectively dead input.
+    "dex_caught",
     "target_already_caught",
+    # The gate and the target. Without these the agent is asked to hit one specific spot
+    # while blind both to where it is and to whether hitting it does anything.
+    "catch_ready",
+    "saucer_dx",
+    "saucer_dy",
+    "saucer_dist",
 )
 OBS_DIM = len(OBS_FIELDS)
 
@@ -105,8 +138,12 @@ _SCALES: dict[str, float] = {
     "rare_pokemon_flag": 1.0,
     "catch_tiles_flipped": 24.0,
     "mon_hits": 8.0,
-    "dex_caught_frac": 1.0,
+    "dex_caught": 8.0,
     "target_already_caught": 1.0,
+    "catch_ready": 1.0,
+    "saucer_dx": 128.0,
+    "saucer_dy": 128.0,
+    "saucer_dist": 180.0,
 }
 
 
@@ -118,7 +155,7 @@ class EnvConfig:
     frame_skip: int = 1  # frame-level control; see the design spec
     max_frames: int = 60 * 60 * 30  # 30 min of game time, truncation backstop
     launch_grace_frames: int = 120  # frames the agent gets to press A before we do it
-    stage: str = "dex"  # curriculum stage: "survive" | "score" | "dex" | "catch"
+    stage: str = "dex"  # "survive" | "score" | "dex" | "saucer" | "catch"
     # "catch" trains the catch sub-task in isolation: every episode starts already inside
     # catch mode, so the agent gets a dense stream of attempts instead of one incidental
     # catch per 20,000-frame game. Full-game stages leave these unused.
@@ -200,6 +237,11 @@ class PinballEnv(gym.Env):
         self._prev_xy = (0, 0)
         self._frames = 0
         self._launched = False
+        self._catch_entries = 0
+        self._catch_idle_frames = self.CATCH_ENTRY_GAP_FRAMES
+        self._saucer_visits = 0
+        self._saucer_dwell = 0
+        self._saucer_counted = False
 
     # ---- observation -------------------------------------------------------------
 
@@ -225,6 +267,7 @@ class PinballEnv(gym.Env):
         target = mem[ADDR_POKEMON_TO_CATCH]
         pokedex = self._dex_bytes()
         dex_caught = _dex_caught_count(pokedex)
+        sdx, sdy = x - SAUCER_X, y - SAUCER_Y
         return {
             "ball_x": x,
             "ball_y": y,
@@ -255,7 +298,46 @@ class PinballEnv(gym.Env):
             "target_already_caught": float(
                 0 < target <= N_SPECIES and bool(pokedex[target - 1] & 2)
             ),
+            "catch_ready": float(mem[ADDR_CATCH_READY] == CATCH_READY_VALUE),
+            "saucer_dx": sdx,
+            "saucer_dy": sdy,
+            "saucer_dist": (sdx * sdx + sdy * sdy) ** 0.5,
         }
+
+    CATCH_ENTRY_GAP_FRAMES = 180
+    SAUCER_RADIUS = 2.0
+    SAUCER_DWELL_FRAMES = 5  # the ball is held in the saucer, so a real visit is not a graze
+
+    def _count_events(self, raw: dict[str, float]) -> None:
+        """Track the two numbers the objective decomposes into: saucer visits, and how many
+        of them became catch attempts.
+
+        Catch-mode entries are debounced because special_mode_active flickers off mid-attempt
+        (observed at frame 2,940 with 96s still on the clock), so a naive 0->1 edge counts one
+        attempt many times.
+        """
+        in_catch = raw["special_mode_active"] > 0 and raw["special_mode"] == SPECIAL_MODE_CATCH
+        if in_catch:
+            if self._catch_idle_frames >= self.CATCH_ENTRY_GAP_FRAMES:
+                self._catch_entries += 1
+            self._catch_idle_frames = 0
+        else:
+            self._catch_idle_frames += self.config.frame_skip
+
+        if raw["saucer_dist"] < self.SAUCER_RADIUS and not in_catch:
+            self._saucer_dwell += self.config.frame_skip
+            if self._saucer_dwell >= self.SAUCER_DWELL_FRAMES and not self._saucer_counted:
+                self._saucer_visits += 1
+                self._saucer_counted = True
+        else:
+            self._saucer_dwell = 0
+            self._saucer_counted = False
+
+        # Reward stages read the debounced count from here rather than re-deriving an edge:
+        # special_mode_active flickers, and a bonus on the raw edge pays repeatedly for one
+        # attempt. It is also mode-specific -- an unqualified edge pays for stage-change and
+        # evolution modes, which is worth 100 per episode of free reward.
+        raw["catch_entries"] = float(self._catch_entries)
 
     def _observe(self, raw: dict[str, float]) -> np.ndarray:
         vec = np.fromiter(
@@ -312,9 +394,19 @@ class PinballEnv(gym.Env):
                 self._frames >= self.config.launch_grace_frames
                 and self._frames % 30 < self.config.frame_skip
             ):
-                self.pyboy.button("a", 5)
+                # Declare the press through _held rather than pyboy.button("a", 5): that
+                # queues a release 5 frames later while _apply_action still believes A is
+                # down, so after one fallback press the right flipper could stay
+                # released-but-believed-held for the rest of the episode, silently cutting
+                # the action space to two states. Holding it here keeps the two in sync --
+                # _apply_action releases it on the next step if the policy wants it up.
+                self.pyboy.button_press(RIGHT_FLIPPER_BUTTON)
+                self._held = (
+                    ACTION_BOTH if self._held in (ACTION_LEFT, ACTION_BOTH) else ACTION_RIGHT
+                )
 
         raw = self._raw_state()
+        self._count_events(raw)
         ball_lost = (
             self.gw.balls_left < prev_balls_left
             or self.gw.lost_ball_during_saver > prev_lost_during_saver
@@ -342,6 +434,17 @@ class PinballEnv(gym.Env):
                 "dex_caught": _dex_caught_count(self._dex_bytes()),
                 "caught_in_session": self.gw.pokemon_caught_in_session,
                 "evolutions": self.gw.evolution_success_count,
+                # The decomposition the objective actually has: saucer visits x whether the
+                # saucer was ready x ~80% in-mode conversion. Random gets 1.55 visits, 0.88
+                # catch-mode entries and ~0.88 dex per episode. Judge on catch_entries;
+                # dex/game is its noisy consequence.
+                "saucer_visits": self._saucer_visits,
+                "catch_entries": self._catch_entries,
+                # Roulette slots are kept only as a diagnostic. They are NOT the catch-mode
+                # trigger: measured entries happen with zero slots opened, and slot events
+                # land thousands of frames away from mode entry.
+                "slots_opened": self.gw.roulette_slots_opened,
+                "slots_entered": self.gw.roulette_slots_entered,
             }
         return self._observe(raw), reward, terminated, truncated, info
 
@@ -376,6 +479,11 @@ class PinballEnv(gym.Env):
         self._frames = 0
         self._launched = False
         self._catch_mode_seen = False
+        self._catch_entries = 0
+        self._catch_idle_frames = self.CATCH_ENTRY_GAP_FRAMES
+        self._saucer_visits = 0
+        self._saucer_dwell = 0
+        self._saucer_counted = False
         if self.config.stage == "catch":
             self._force_catch_mode()
         raw = self._raw_state()
@@ -387,4 +495,8 @@ class PinballEnv(gym.Env):
         return np.asarray(self.pyboy.screen.ndarray)
 
     def close(self):
-        self.pyboy.stop()
+        # save=False: pyboy.stop() otherwise writes cartridge SRAM to <rom>.ram, which is
+        # what every later PyBoy boots from. Each closed env (every video capture opens and
+        # closes one) would mutate the boot state of the next run. Episodes already start
+        # from an in-memory savestate with a zeroed Pokedex, so there is nothing to keep.
+        self.pyboy.stop(save=False)
