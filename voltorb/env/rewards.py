@@ -147,6 +147,7 @@ class SaucerReward(DexReward):
     def __init__(
         self,
         saucer_weight: float = 2.0,
+        saucer_shaping: str = "potential",  # "potential" | "raw"
         catch_mode_bonus: float = 100.0,
         gamma: float = 0.999,
         catch_progress_bonus: float = 0.0,
@@ -156,7 +157,10 @@ class SaucerReward(DexReward):
         super().__init__(
             catch_progress_bonus=catch_progress_bonus, height_weight=height_weight, **kwargs
         )
+        if saucer_shaping not in ("potential", "raw"):
+            raise ValueError(f"saucer_shaping must be 'potential' or 'raw', got {saucer_shaping!r}")
         self.saucer_weight = saucer_weight
+        self.saucer_shaping = saucer_shaping
         self.catch_mode_bonus = catch_mode_bonus
         self.gamma = gamma
 
@@ -182,7 +186,13 @@ class SaucerReward(DexReward):
         reward = super().step(raw, gw, ball_lost=ball_lost)
 
         potential = self._potential(raw)
-        reward += self.saucer_weight * (self.gamma * potential - self._prev_potential)
+        if self.saucer_shaping == "raw":
+            # Proximity paid per frame, exactly like the ball-height term that is the only
+            # shaping this project has ever gotten to work. saucer-01 showed the
+            # potential-based form moves catch entries a little and saucer visits not at all.
+            reward += self.saucer_weight * (1.0 + potential)
+        else:
+            reward += self.saucer_weight * (self.gamma * potential - self._prev_potential)
         self._prev_potential = potential
 
         entries = raw.get("catch_entries", 0.0)

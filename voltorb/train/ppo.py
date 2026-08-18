@@ -46,9 +46,16 @@ TERMINAL_KEYS = (
 )
 
 
-def _env_thunk(rom: str, stage: str, frame_skip: int, seed: int) -> PinballEnv:
+def _env_thunk(
+    rom: str, stage: str, frame_skip: int, seed: int, reward_kwargs: dict | None = None
+) -> PinballEnv:
     # Module-level so it survives pickling into spawned worker processes.
-    env = PinballEnv(EnvConfig(rom_path=rom, frame_skip=frame_skip, stage=stage))
+    env = PinballEnv(
+        EnvConfig(
+            rom_path=rom, frame_skip=frame_skip, stage=stage,
+            reward_kwargs=dict(reward_kwargs or {}),
+        )
+    )
     env.reset(seed=seed)
     return env
 
@@ -186,6 +193,10 @@ def parse_args():
     p.add_argument("--anneal-lr", action="store_true", default=True)
     p.add_argument("--device", default="cpu", help="cpu beats mps for a net this small")
     p.add_argument("--seed", type=int, default=1)
+    # saucer stage only. "raw" pays proximity every frame like the ball-height term;
+    # "potential" is the policy-invariant form, which saucer-01 showed does not make it aim.
+    p.add_argument("--saucer-shaping", default="potential", choices=["potential", "raw"])
+    p.add_argument("--saucer-weight", type=float, default=None)
     p.add_argument("--video-every", type=int, default=25, help="updates between videos; 0=off")
     p.add_argument("--save-every", type=int, default=50)
     return p.parse_args()
@@ -203,9 +214,17 @@ def main() -> None:
     writer = SummaryWriter(str(run_dir))
     writer.add_text("args", "\n".join(f"{k}={v}" for k, v in vars(args).items()))
 
+    reward_kwargs: dict = {}
+    if args.stage == "saucer":
+        reward_kwargs["saucer_shaping"] = args.saucer_shaping
+        if args.saucer_weight is not None:
+            reward_kwargs["saucer_weight"] = args.saucer_weight
+
     envs = gym.vector.AsyncVectorEnv(
         [
-            functools.partial(_env_thunk, args.rom, args.stage, args.frame_skip, args.seed + i)
+            functools.partial(
+                _env_thunk, args.rom, args.stage, args.frame_skip, args.seed + i, reward_kwargs
+            )
             for i in range(args.num_envs)
         ],
         autoreset_mode=gym.vector.AutoresetMode.SAME_STEP,
