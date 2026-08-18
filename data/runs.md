@@ -238,6 +238,40 @@ mattered:
 6. **`dex_caught_frac` was a dead input** (`/151` put one catch at 0.0066 against features of
    order 0.5). Now `dex_caught / 8`.
 
+### THE ANSWER: the objective has almost no headroom over random
+
+`tools/mpc.py` plans with the emulator as a forward model -- snapshot, roll 12 random futures,
+execute the best one's first 100 actions, replan -- and it solves the aiming problem outright.
+It does not improve the objective. 8 episodes per arm, uncapped:
+
+| | frames/ep | visits/10k | **entries/10k** | dex/game | dex/10k |
+|---|---|---|---|---|---|
+| random (matched) | 15,771 | 1.51 | 0.63 | 0.38 | 0.24 |
+| random (n=100 reference) | 17,871 | 1.18 | 0.59 | 0.88 | 0.49 |
+| **MPC** | 28,965 | **8.93** | **0.52** | 1.38 | 0.47 |
+
+**MPC lands in the saucer 5.9x as often and enters catch mode slightly LESS often per frame.**
+Its higher dex/game is entirely survival: it plays 1.8x longer because the planner scores ball
+loss at -100. Per frame it catches at exactly the random rate.
+
+The reason is the arm gate. Measured over 12 episodes: **0xD532 re-arms 0.42 times per episode**,
+at 696-12,595 frames after it disarms (median 7,320, sd 4,357), with no trigger found -- not a
+map change, not a new ball, and it happens on maps 2/3/5 at any balls_left. With the arm at
+frame 0 that is **~1.4 catch opportunities per game, for any policy**, and MPC measured 1.5.
+
+At ~80% conversion that caps dex/game at **~1.1-1.2 at natural episode length. Random already
+gets 0.88.** The entire headroom on the stated objective is roughly 25%, which is inside the
+noise of a 100-episode eval. **That is why 190M+ steps across eight runs produced nothing: there
+was almost nothing there to find.**
+
+**dex/game is a survival metric wearing a costume.** It is (arms per game) x 0.8, arms accrue
+with time on the table, so the only real lever is keeping the ball alive -- which `survive-03`
+and `score-01` already pull, at +42% and +23%. The project's two "wins" were the honest ones all
+along.
+
+If the objective is to stay, it has to be **dex per 10,000 frames**, and the target has to be the
+arm gate: what re-arms 0xD532 is now the only question whose answer could change the ceiling.
+
 ### The shot IS controllable (2026-08-18, `tools/shotsearch.py`)
 
 Settled without a human and without learning, using savestates. From a real in-play state with

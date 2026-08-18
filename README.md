@@ -30,6 +30,18 @@ The done bar used to be "≥1 new species per game in ≥90% of games". It is **
 uniform random policy clears it 72–78% of the time, so it measured the game's generosity
 rather than the agent.
 
+**The objective has almost no headroom, and that is the project's main finding.** A catch needs
+the saucer to be armed (`0xD532 == 128`). It arms once at frame 0 and re-arms only **0.42 times
+per episode** (measured over 12 episodes; 696–12,595 frames after disarming, no trigger found),
+so **any policy gets ~1.4 catch opportunities per game.** At ~80% conversion that caps dex/game
+near 1.1–1.2, and a uniform random policy already scores 0.88.
+
+A planning agent (`tools/mpc.py`, no training) confirms it: it reaches the saucer **5.9× as
+often** as random and enters catch mode **slightly less often per frame**, because the extra
+visits land while the saucer is disarmed. Its higher dex/game is purely survival — it plays 1.8×
+longer. So **dex/game is a survival metric in disguise**: (arms per game) × 0.8, and arms accrue
+with time on the table. That is why 190M+ training steps across eight runs all read as noise.
+
 **Judge on rates, not per-episode counts.** Every policy trained here buys survival time,
 which buys more chances at the objective without improving the chance per frame — and that
 confound has absorbed three experiments. `saucer-03` reads +1.9σ on dex/game and exactly 0.00σ
