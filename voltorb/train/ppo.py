@@ -43,17 +43,24 @@ TERMINAL_KEYS = (
     "catch_entries",
     "slots_opened",
     "slots_entered",
+    "shot_level",
 )
 
 
 def _env_thunk(
-    rom: str, stage: str, frame_skip: int, seed: int, reward_kwargs: dict | None = None
+    rom: str,
+    stage: str,
+    frame_skip: int,
+    seed: int,
+    reward_kwargs: dict | None = None,
+    env_kwargs: dict | None = None,
 ) -> PinballEnv:
     # Module-level so it survives pickling into spawned worker processes.
     env = PinballEnv(
         EnvConfig(
             rom_path=rom, frame_skip=frame_skip, stage=stage,
             reward_kwargs=dict(reward_kwargs or {}),
+            **dict(env_kwargs or {}),
         )
     )
     env.reset(seed=seed)
@@ -195,6 +202,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=1)
     # saucer stage only. "raw" pays proximity every frame like the ball-height term;
     # "potential" is the policy-invariant form, which saucer-01 showed does not make it aim.
+    p.add_argument("--shot-curriculum", action="store_true",
+                   help="shot stage: start near the goal and walk the start backwards")
     p.add_argument("--saucer-shaping", default="potential", choices=["potential", "raw"])
     p.add_argument("--saucer-weight", type=float, default=None)
     p.add_argument("--video-every", type=int, default=25, help="updates between videos; 0=off")
@@ -220,10 +229,15 @@ def main() -> None:
         if args.saucer_weight is not None:
             reward_kwargs["saucer_weight"] = args.saucer_weight
 
+    env_kwargs: dict = {}
+    if args.stage == "shot" and args.shot_curriculum:
+        env_kwargs["shot_curriculum"] = True
+
     envs = gym.vector.AsyncVectorEnv(
         [
             functools.partial(
-                _env_thunk, args.rom, args.stage, args.frame_skip, args.seed + i, reward_kwargs
+                _env_thunk, args.rom, args.stage, args.frame_skip, args.seed + i,
+                reward_kwargs, env_kwargs,
             )
             for i in range(args.num_envs)
         ],

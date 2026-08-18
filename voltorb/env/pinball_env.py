@@ -181,6 +181,22 @@ class EnvConfig:
     shot_pool_size: int = 48       # savestates held per worker
     shot_pool_gap: int = 400       # frames between snapshots, so the pool is not one rally
     shot_pool_refresh: int = 400   # episodes between pool rebuilds, to keep it from staling
+    # Backward start-state curriculum. shot-01 showed the shot is not learned from a cold
+    # start even at a 12.5% base rate, while tools/shotsearch.py showed a winning 90-frame
+    # prefix reproduces at 0.379 -- open-loop control exists, closed-loop control was not
+    # found. That is an exploration failure, so start the agent near the goal and walk it
+    # back.
+    #
+    # States are harvested for free rather than searched for: play randomly with a ring of
+    # savestates, and when the ball lands in the saucer, keep the snapshots from N frames
+    # before it. Each observed visit yields one start state per level.
+    shot_curriculum: bool = False
+    shot_levels: tuple = (45, 90, 180, 360, 720)  # frames before an observed saucer visit
+    shot_level_states: int = 16    # start states banked per level
+    shot_ring_stride: int = 15     # frames between ring snapshots (176 KB each)
+    shot_window: int = 50          # episodes of success history driving promotion
+    shot_promote: float = 0.70
+    shot_demote: float = 0.25
     reward_kwargs: dict = field(default_factory=dict)
 
 
@@ -258,6 +274,9 @@ class PinballEnv(gym.Env):
         self._frames = 0
         self._launched = False
         self._shot_pool: list[io.BytesIO] = []
+        self._level_pool: dict[int, list[io.BytesIO]] = {}
+        self._level = 0
+        self._level_history: list[float] = []
         self._episodes_since_pool = 0
         self._catch_entries = 0
         self._catch_idle_frames = self.CATCH_ENTRY_GAP_FRAMES
@@ -467,6 +486,8 @@ class PinballEnv(gym.Env):
             truncated = self._frames >= self.config.max_frames
         info = {}
         if terminated or truncated:
+            if self.config.stage == "shot" and self.config.shot_curriculum:
+                self._update_curriculum(self._saucer_visits > 0)
             info = {
                 "score": self.gw.score,
                 "frames": self._frames,
@@ -479,6 +500,7 @@ class PinballEnv(gym.Env):
                 # dex/game is its noisy consequence.
                 "saucer_visits": self._saucer_visits,
                 "catch_entries": self._catch_entries,
+                "shot_level": float(getattr(self, "_level", -1)),
                 # Roulette slots are kept only as a diagnostic. They are NOT the catch-mode
                 # trigger: measured entries happen with zero slots opened, and slot events
                 # land thousands of frames away from mode entry.
@@ -486,6 +508,116 @@ class PinballEnv(gym.Env):
                 "slots_entered": self.gw.roulette_slots_entered,
             }
         return self._observe(raw), reward, terminated, truncated, info
+
+    def _build_backward_pool(self) -> None:
+        """Harvest start states at fixed distances before observed saucer visits.
+
+        No search: a random policy reaches the saucer often enough that keeping a ring of
+        savestates and looking backwards from each visit yields one start state per level per
+        visit, at the cost of the play itself.
+        """
+        levels = list(self.config.shot_levels)
+        self._level_pool = {lv: [] for lv in levels}
+        stride = self.config.shot_ring_stride
+        ring: list[tuple[int, io.BytesIO]] = []
+        ring_span = max(levels) + stride * 2
+
+        self._boot_state.seek(0)
+        self.pyboy.load_state(self._boot_state)
+        self.gw.reset_tracking()
+        self._held = ACTION_NONE
+        self._frames = 0
+        self._launched = False
+        dwell = 0
+        counted = False
+        f = 0
+        budget = 400_000
+        while f < budget and any(
+            len(v) < self.config.shot_level_states for v in self._level_pool.values()
+        ):
+            action = int(self.np_random.integers(0, N_ACTIONS))
+            if not self._launched and self._frames >= self.config.launch_grace_frames:
+                action = self._launch_action(action)
+            self._apply_action(action)
+            self.pyboy.tick(1, self.config.render, False)
+            self._frames += 1
+            f += 1
+            if not self._launched and self.gw.current_stage == 0:
+                self._launched = True
+            if self.gw.game_over:
+                self._boot_state.seek(0)
+                self.pyboy.load_state(self._boot_state)
+                self.gw.reset_tracking()
+                self._held = ACTION_NONE
+                self._frames = 0
+                self._launched = False
+                ring.clear()
+                dwell, counted = 0, False
+                continue
+
+            if f % stride == 0:
+                snap = io.BytesIO()
+                self.pyboy.save_state(snap)
+                ring.append((f, snap))
+                while ring and f - ring[0][0] > ring_span:
+                    ring.pop(0)
+
+            mem = self.pyboy.memory
+            x = (mem[ADDR_BALL_X] | (mem[ADDR_BALL_X + 1] << 8)) / 256.0
+            y = (mem[ADDR_BALL_Y] | (mem[ADDR_BALL_Y + 1] << 8)) / 256.0
+            at_saucer = ((x - SAUCER_X) ** 2 + (y - SAUCER_Y) ** 2) ** 0.5 < self.SAUCER_RADIUS
+            if at_saucer and mem[0xD54B] == 0:
+                dwell += 1
+                if dwell >= self.SAUCER_DWELL_FRAMES and not counted:
+                    counted = True
+                    for lv in levels:
+                        if len(self._level_pool[lv]) >= self.config.shot_level_states:
+                            continue
+                        # nearest ring entry to `lv` frames back
+                        best = min(ring, key=lambda e: abs((f - e[0]) - lv), default=None)
+                        if best is not None and abs((f - best[0]) - lv) <= stride:
+                            self._level_pool[lv].append(best[1])
+            else:
+                dwell = 0
+                counted = False
+
+        self._level = 0
+        self._level_history = []
+        self._episodes_since_pool = 0
+
+    def _load_curriculum_state(self) -> None:
+        if not getattr(self, "_level_pool", None):
+            self._build_backward_pool()
+        levels = list(self.config.shot_levels)
+        # Fall back to the nearest stocked level if the harvest came up short for this one.
+        order = sorted(range(len(levels)), key=lambda i: abs(i - self._level))
+        idx = next((i for i in order if self._level_pool[levels[i]]), None)
+        if idx is None:
+            self._load_shot_state()
+            return
+        pool = self._level_pool[levels[idx]]
+        snap = pool[int(self.np_random.integers(0, len(pool)))]
+        snap.seek(0)
+        self.pyboy.load_state(snap)
+        self.pyboy.button_release(LEFT_FLIPPER_BUTTON)
+        self.pyboy.button_release(RIGHT_FLIPPER_BUTTON)
+        self._held = ACTION_NONE
+        self._launched = True
+
+    def _update_curriculum(self, hit: bool) -> None:
+        """Promote to a start further from the goal once the current one is reliable."""
+        self._level_history.append(1.0 if hit else 0.0)
+        if len(self._level_history) < self.config.shot_window:
+            return
+        rate = sum(self._level_history) / len(self._level_history)
+        if rate >= self.config.shot_promote and self._level < len(self.config.shot_levels) - 1:
+            self._level += 1
+            self._level_history = []
+        elif rate <= self.config.shot_demote and self._level > 0:
+            self._level -= 1
+            self._level_history = []
+        elif len(self._level_history) >= self.config.shot_window * 2:
+            self._level_history = self._level_history[-self.config.shot_window :]
 
     def _is_shot_opportunity(self) -> bool:
         """Ball in play, on the screen that has the saucer, with the saucer ready."""
@@ -582,7 +714,10 @@ class PinballEnv(gym.Env):
         self._launched = False
         self._catch_mode_seen = False
         if self.config.stage == "shot":
-            self._load_shot_state()
+            if self.config.shot_curriculum:
+                self._load_curriculum_state()
+            else:
+                self._load_shot_state()
         self._catch_entries = 0
         self._catch_idle_frames = self.CATCH_ENTRY_GAP_FRAMES
         self._saucer_visits = 0
