@@ -790,7 +790,16 @@ class PinballEnv(gym.Env):
         self._saucer_visits = 0
         self._saucer_dwell = 0
         self._saucer_counted = False
+        self._alley_shots = 0
+        self._arms = 0
+        self._prev_alley_count = None
+        self._prev_ready = None
         if self.config.stage == "catch":
+            # WARNING: this path passes unlimited_time=True, which freezes timer_active and
+            # timer_remaining at values that occur in 0% of real catch attempts -- two of the
+            # observation's inputs wrong for the whole of catch-01. It is quarantined to the
+            # "catch" stage on purpose. Do not reuse it for a new sub-task without either
+            # dropping unlimited_time or masking those two fields.
             self._force_catch_mode()
         raw = self._raw_state()
         self._episode_start_dex = raw["dex_caught"]
