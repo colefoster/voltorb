@@ -44,6 +44,8 @@ TERMINAL_KEYS = (
     "slots_opened",
     "slots_entered",
     "shot_level",
+    "alley_shots",
+    "arms",
 )
 
 
@@ -171,7 +173,8 @@ def load_checkpoint(path, map_location="cpu") -> dict:
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument(
-        "--stage", default="survive", choices=["survive", "score", "dex", "saucer", "catch", "shot"]
+        "--stage", default="survive",
+        choices=["survive", "score", "dex", "saucer", "catch", "shot", "alley"]
     )
     p.add_argument("--rom", default="roms/pokemon_pinball.gbc")
     p.add_argument("--run-name", default=None)

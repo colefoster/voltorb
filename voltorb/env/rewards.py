@@ -182,6 +182,48 @@ class DexReward(ScoreReward):
         return reward
 
 
+class AlleyReward(DexReward):
+    """Stage 5: pay for the thing that actually arms the saucer.
+
+    Settled from the disassembly (see pinball_env.ADDR_RIGHT_ALLEY_COUNT): catch-ready is
+    exactly `wRightAlleyCount >= 2`, and that byte increments when the ball passes the
+    secondary right alley trigger after the main one -- i.e. when you shoot the right ramp. It
+    caps at 3, zeroes at stage init, and catch mode consumes it.
+
+    Every previous attempt at this objective aimed at the *saucer*, which is one shot with no
+    controllable precursor, and produced four nulls. The ramp is a different kind of target:
+    it is repeatable, it happens ~2x per episode under random play, and for the first time the
+    quantity being rewarded is one the agent can now see -- `right_alley_count` is in the
+    observation, so "get one more ramp" is a representable intention rather than an invisible
+    precondition.
+
+    Deliberately NOT proximity-shaped toward the ramp's coordinates. saucer-01/02/03 spent
+    three runs paying for distance to a fixed point and all three were null on aim; the event
+    itself is the signal here.
+    """
+
+    def __init__(self, alley_bonus: float = 50.0, **kwargs):
+        # ~2 increments/episode under random, so this pays ~100 against 300 for a species and
+        # ~9 for the height term -- the same ratio that DexReward already uses, and the arm is
+        # a strict precondition for the species, not a competitor to it.
+        super().__init__(**kwargs)
+        self.alley_bonus = alley_bonus
+
+    def reset(self, raw, gw) -> None:
+        super().reset(raw, gw)
+        self._prev_alley = raw["right_alley_count"]
+
+    def step(self, raw, gw, *, ball_lost: bool) -> float:
+        reward = super().step(raw, gw, ball_lost=ball_lost)
+        count = raw["right_alley_count"]
+        # Only pay increases. Catch mode zeroes the byte, and a reset must not read as
+        # negative progress -- nor should re-earning it from zero be free.
+        if count > self._prev_alley:
+            reward += self.alley_bonus * (count - self._prev_alley)
+        self._prev_alley = count
+        return reward
+
+
 class SaucerReward(DexReward):
     """Stage 4: pay for aiming at the one spot that starts a catch attempt.
 
@@ -372,6 +414,7 @@ _STAGES = {
     "score": ScoreReward,
     "dex": DexReward,
     "saucer": SaucerReward,
+    "alley": AlleyReward,
     "catch": CatchReward,
     "shot": ShotReward,
 }

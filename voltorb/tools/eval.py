@@ -75,6 +75,8 @@ def evaluate(checkpoint: str, args) -> dict:
                         "visits": float(final["saucer_visits"][i]),
                         "catch_entries": float(final["catch_entries"][i]),
                         "slots_entered": float(final["slots_entered"][i]),
+                        "alley_shots": float(final["alley_shots"][i]),
+                        "arms": float(final["arms"][i]),
                     }
                 )
     envs.close()
@@ -121,6 +123,14 @@ def evaluate(checkpoint: str, args) -> dict:
         "_frames": get("frames"),
         "visit_rate": get("visits").sum() / get("frames").sum() * 10_000.0,
         "entry_rate": get("catch_entries").sum() / get("frames").sum() * 10_000.0,
+        # The arm gate is the ceiling on everything downstream, and it is a count of ramp
+        # shots, so it is the honest deciding metric for anything aimed at the dex objective.
+        "alley_mean": get("alley_shots").mean(),
+        "alley_stderr": get("alley_shots").std(ddof=1) / np.sqrt(len(e)),
+        "alley_rate": get("alley_shots").sum() / get("frames").sum() * 10_000.0,
+        "arms_mean": get("arms").mean(),
+        "arms_stderr": get("arms").std(ddof=1) / np.sqrt(len(e)),
+        "arms_rate": get("arms").sum() / get("frames").sum() * 10_000.0,
     }
 
 
@@ -130,7 +140,7 @@ def main() -> None:
                     help="path, or 'random' for the baseline; repeatable")
     ap.add_argument("--rom", default="roms/pokemon_pinball.gbc")
     ap.add_argument("--stage", default="dex",
-                    choices=["survive", "score", "dex", "saucer", "catch", "shot"],
+                    choices=["survive", "score", "dex", "saucer", "catch", "shot", "alley"],
                     help="only affects reward bookkeeping, not the reported metrics")
     ap.add_argument("--episodes", type=int, default=20)
     ap.add_argument("--num-envs", type=int, default=8)
@@ -145,7 +155,7 @@ def main() -> None:
     print(
         f"\n{'checkpoint':26s} {'n':>3s} {'frames +- se':>19s} "
         f"{'visits':>7s} {'catchmd +- se':>15s} "
-        f"{'score/10k':>12s} {'vis/10k':>8s} {'ent/10k':>8s} "
+        f"{'score/10k':>12s} {'vis/10k':>8s} {'ent/10k':>8s} {'ramp/10k':>9s} {'arm/10k':>8s} "
         f"{'dex/game +- se':>17s} {'dex>=1':>7s}"
     )
     for r in rows:
@@ -155,6 +165,7 @@ def main() -> None:
             f"{r['visits_mean']:7.2f} "
             f"{r['entries_mean']:9.2f} +-{r['entries_stderr']:4.2f} "
             f"{r['score_rate']:12,.0f} {r['visit_rate']:8.2f} {r['entry_rate']:8.2f} "
+            f"{r['alley_rate']:9.2f} {r['arms_rate']:8.2f} "
             f"{r['dex_mean']:10.2f} +-{r['dex_stderr']:5.2f} "
             f"{r['dex_hit_rate']:6.0f}%"
         )
@@ -183,6 +194,8 @@ def main() -> None:
                   f"[95% CI {lo:+,.0f}, {hi:+,.0f}] = {z:+.1f} sigma  ({verdict})")
         # catch_entries first: it is what the project is now judged on.
         for label, mean_key, se_key in (
+            ("alley_shots/ep", "alley_mean", "alley_stderr"),
+            ("arms/ep", "arms_mean", "arms_stderr"),
             ("catch_entries/ep", "entries_mean", "entries_stderr"),
             ("saucer_visits/ep", "visits_mean", "visits_stderr"),
             ("dex/game", "dex_mean", "dex_stderr"),

@@ -55,6 +55,34 @@ ADDR_POKEDEX = 0xD962  # 151 bytes, one bitfield per species
 # produced a null result.
 ADDR_CATCH_READY = 0xD532
 CATCH_READY_VALUE = 128
+
+# WHAT ARMS IT, settled from the pret/pokepinball disassembly on 2026-08-19 and verified
+# against the ROM. 0xD532 is `wIndicatorStates + 3`, and every site that writes it computes
+# the same predicate:
+#
+#     HandleSecondaryRightAlleyTrigger_RedField / HandleThirdRightAlleyTrigger_RedField:
+#         ld a, [wRightAlleyCount] ; cp $3 ; ret z      ; capped at 3
+#         inc a ; ld [wRightAlleyCount], a
+#         ld a, [wRightAlleyCount] ; cp $2 ; ret c      ; needs >= 2
+#         ld a, $80 ; ld [wIndicatorStates + 3], a      ; ARM
+#
+# and `SetLeftAndRightAlleyArrowIndicatorStates_RedField` recomputes it from the same byte on
+# every map move. So **catch-ready is exactly `wRightAlleyCount >= 2`**, and wRightAlleyCount
+# is incremented by the ball passing the secondary/third right alley trigger *after* the main
+# right alley trigger set wRightAlleyTrigger -- i.e. by shooting the right ramp. It is zeroed
+# at stage init and consumed by catch mode.
+#
+# This is not a timer and it is not luck. The ledger's "the objective is hard-capped at ~1.4
+# arms per game for any policy" was two errors stacked: the 0.42 re-arms/episode behind it was
+# measured at n=12 and is **0.708 +- 0.075 at n=120**, and the quantity is not policy-invariant
+# at all -- it is a count of ramp shots. Verified over 53,205 frames: arm transitions and
+# wRightAlleyCount increments occur in lockstep, and the 4.7% of frames where the biconditional
+# fails are all bookkeeping lag inside catch mode, which zeroes the count a few frames after it
+# clears the indicator.
+ADDR_RIGHT_ALLEY_TRIGGER = 0xD544
+ADDR_RIGHT_ALLEY_COUNT = 0xD545  # 0..3; >=2 arms the saucer
+ADDR_LEFT_ALLEY_TRIGGER = 0xD542
+ADDR_LEFT_ALLEY_COUNT = 0xD543
 SAUCER_X, SAUCER_Y = 124.0, 120.0
 
 # 0xD586 (48 bytes, "tile illumination" in PyBoy's table) is NOT the upstream lit-target
@@ -108,6 +136,15 @@ OBS_FIELDS: tuple[str, ...] = (
     "saucer_dx",
     "saucer_dy",
     "saucer_dist",
+    # The arm gate, and the reason the saucer stages were blind. catch_ready is a *derived*
+    # bit -- it is `right_alley_count >= 2`. Feeding only the bit tells the agent whether the
+    # shot is live but never how close it is to making it live, so "get one more ramp" was an
+    # unrepresentable intention. right_alley_trigger is the sequencing latch: the count only
+    # increments on the secondary trigger when this is already set.
+    "right_alley_count",
+    "right_alley_trigger",
+    "left_alley_count",
+    "left_alley_trigger",
 )
 OBS_DIM = len(OBS_FIELDS)
 
@@ -144,6 +181,10 @@ _SCALES: dict[str, float] = {
     "saucer_dx": 128.0,
     "saucer_dy": 128.0,
     "saucer_dist": 180.0,
+    "right_alley_count": 3.0,
+    "right_alley_trigger": 1.0,
+    "left_alley_count": 3.0,
+    "left_alley_trigger": 1.0,
 }
 
 
@@ -283,6 +324,13 @@ class PinballEnv(gym.Env):
         self._saucer_visits = 0
         self._saucer_dwell = 0
         self._saucer_counted = False
+        # Ramp shots that move the arm gate. Counted as increments of wRightAlleyCount rather
+        # than 0->128 edges on catch_ready, because the count is what the game actually gates
+        # on and it keeps accruing (to its cap of 3) after the gate is already open.
+        self._alley_shots = 0
+        self._arms = 0
+        self._prev_alley_count = None
+        self._prev_ready = None
 
     # ---- observation -------------------------------------------------------------
 
@@ -343,6 +391,10 @@ class PinballEnv(gym.Env):
             "saucer_dx": sdx,
             "saucer_dy": sdy,
             "saucer_dist": (sdx * sdx + sdy * sdy) ** 0.5,
+            "right_alley_count": mem[ADDR_RIGHT_ALLEY_COUNT],
+            "right_alley_trigger": float(bool(mem[ADDR_RIGHT_ALLEY_TRIGGER])),
+            "left_alley_count": mem[ADDR_LEFT_ALLEY_COUNT],
+            "left_alley_trigger": float(bool(mem[ADDR_LEFT_ALLEY_TRIGGER])),
         }
 
     CATCH_ENTRY_GAP_FRAMES = 180
@@ -379,8 +431,20 @@ class PinballEnv(gym.Env):
         # special_mode_active flickers, and a bonus on the raw edge pays repeatedly for one
         # attempt. It is also mode-specific -- an unqualified edge pays for stage-change and
         # evolution modes, which is worth 100 per episode of free reward.
+        count = raw["right_alley_count"]
+        if self._prev_alley_count is not None and count > self._prev_alley_count:
+            self._alley_shots += int(count - self._prev_alley_count)
+        self._prev_alley_count = count
+
+        ready = raw["catch_ready"]
+        if self._prev_ready is not None and ready > self._prev_ready:
+            self._arms += 1
+        self._prev_ready = ready
+
         raw["catch_entries"] = float(self._catch_entries)
         raw["saucer_visits"] = float(self._saucer_visits)
+        raw["alley_shots"] = float(self._alley_shots)
+        raw["arms"] = float(self._arms)
 
     def _observe(self, raw: dict[str, float]) -> np.ndarray:
         vec = np.fromiter(
@@ -500,6 +564,9 @@ class PinballEnv(gym.Env):
                 # dex/game is its noisy consequence.
                 "saucer_visits": self._saucer_visits,
                 "catch_entries": self._catch_entries,
+                # The arm gate, now that it is known to be earned rather than granted.
+                "alley_shots": self._alley_shots,
+                "arms": self._arms,
                 "shot_level": float(getattr(self, "_level", -1)),
                 # Roulette slots are kept only as a diagnostic. They are NOT the catch-mode
                 # trigger: measured entries happen with zero slots opened, and slot events
