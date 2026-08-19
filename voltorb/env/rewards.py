@@ -71,15 +71,25 @@ class ScoreReward(SurviveReward):
     ~3x a max-height frame, while a 3M jackpot pays 5.2: a 173x ratio instead of 3.3x, with the
     per-frame magnitude still bounded near the 1.0 ball-lost penalty.
 
-    `score_weight` is transform-specific and is set so the *total* score budget per episode is
-    unchanged from `score-02` -- 0.003 * sum(sqrt) = 67/episode against 0.1 * sum(log10) = 72
-    under random play. Only the ranking inside that budget changes, which is the point.
+    `score_weight` is transform-specific: 0.1 with "log" and 0.003 with "sqrt" spend the same
+    total budget per episode (72 vs 67 under random play), so only the ranking inside the budget
+    changes.
+
+    **`score-03` ran that experiment and the compression hypothesis lost.** sqrt came back at +1.3
+    sigma vs random where log is +2.4, and -0.5 sigma head to head. The mechanism fired --
+    advantage_std ran 0.38-0.44 against log's 0.28-0.32 -- but explained_variance stayed at 0.96,
+    so the extra advantage was noise on returns the policy does not control. The payout mix is the
+    proof: per ~90k frames the log policy gets 54 events of 1,000,000 and 25 of 3,000,000, random
+    gets 22 and 11, and the sqrt policy gets **14 and 7** -- fewer jackpots than random, from a
+    reward paying them 173x a bumper. The big payouts are not a separately targetable action being
+    declined because they were underpaid; they are what falls out of surviving and playing well.
+    So the default stays "log", which is the `score-02` recipe.
     """
 
     def __init__(
         self,
-        score_weight: float = 0.003,
-        score_transform: str = "sqrt",  # "sqrt" | "log" | "linear"
+        score_weight: float = 0.1,
+        score_transform: str = "log",  # "log" | "sqrt" | "linear"
         score_clip: float = 15.0,
         **kwargs,
     ):

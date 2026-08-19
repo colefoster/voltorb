@@ -206,10 +206,10 @@ def parse_args():
                    help="shot stage: start near the goal and walk the start backwards")
     p.add_argument("--saucer-shaping", default="potential", choices=["potential", "raw"])
     p.add_argument("--saucer-weight", type=float, default=None)
-    # score stage only. The weight is transform-specific: 0.1 with "log" reproduces score-02,
-    # 0.003 with "sqrt" spends the same total budget per episode but ranks a 3M jackpot 173x a
-    # 100-point bumper instead of 3.3x. See rewards.ScoreReward.
-    p.add_argument("--score-transform", default="sqrt", choices=["sqrt", "log", "linear"])
+    # score stage only. The weight is transform-specific: 0.1 with "log" is the score-02 recipe
+    # and the default, 0.003 with "sqrt" spends the same budget but ranks a 3M jackpot 173x a
+    # 100-point bumper instead of 3.3x -- which score-03 ran, and lost. See rewards.ScoreReward.
+    p.add_argument("--score-transform", default="log", choices=["log", "sqrt", "linear"])
     p.add_argument("--score-weight", type=float, default=None)
     p.add_argument("--video-every", type=int, default=25, help="updates between videos; 0=off")
     p.add_argument("--save-every", type=int, default=50)
