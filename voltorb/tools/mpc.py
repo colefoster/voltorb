@@ -31,6 +31,28 @@ from voltorb.env import EnvConfig, PinballEnv
 from voltorb.env.pinball_env import SAUCER_X, SAUCER_Y
 
 
+def _points_rollout(env: PinballEnv, snap: io.BytesIO, actions, horizon: int) -> float:
+    """Score a future by points gained, with losing the ball charged against it.
+
+    Unlike the saucer, points are dense -- most rollouts differ -- so the planner has a usable
+    signal at nearly every decision instead of the ~35% it gets aiming at the saucer.
+    """
+    snap.seek(0)
+    env.pyboy.load_state(snap)
+    env.pyboy.button_release("left")
+    env.pyboy.button_release("a")
+    env._held = 0
+    env._launched = True
+    start_score = env.gw.score
+    prev_balls = env.gw.balls_left
+    for i in range(horizon):
+        env.step(actions[i])
+        if env.gw.balls_left < prev_balls or env.gw.game_over:
+            # A ball is worth ~6.7M to a random policy, so losing one dwarfs any 400-frame gain.
+            return float(env.gw.score - start_score) - 2_000_000.0
+    return float(env.gw.score - start_score)
+
+
 def _score_rollout(env: PinballEnv, snap: io.BytesIO, actions, horizon: int) -> float:
     """Replay `actions` and score the future: a saucer visit is worth far more than anything
     else, and closest approach breaks ties so the planner still has a gradient when no rollout
@@ -84,7 +106,8 @@ def run_episode(env: PinballEnv, args, seed: int, stats: dict) -> dict:
             best_score, best_actions = -1e18, None
             for k in range(args.rollouts):
                 actions = [int(rng.integers(0, 4)) for _ in range(args.horizon)]
-                score = _score_rollout(env, snap, actions, args.horizon)
+                scorer = _points_rollout if args.objective == "score" else _score_rollout
+                score = scorer(env, snap, actions, args.horizon)
                 if score > best_score:
                     best_score, best_actions = score, actions
             # Put the real game back exactly as it was before planning.
@@ -98,8 +121,12 @@ def run_episode(env: PinballEnv, args, seed: int, stats: dict) -> dict:
             env._frames, env._prev_xy = frames0, prev_xy
             plan = best_actions[: args.replan]
             stats["decisions"] += 1
-            stats["with_hit"] += best_score > 500.0
-            stats["blind"] += best_score <= -99.0 or best_score == -1.0
+            if args.objective == "score":
+                stats["with_hit"] += best_score > 0.0
+                stats["blind"] += best_score <= 0.0
+            else:
+                stats["with_hit"] += best_score > 500.0
+                stats["blind"] += best_score <= -99.0 or best_score == -1.0
         action = plan.pop(0)
         _, _, term, trunc, info = env.step(action)
         frames += 1
@@ -116,6 +143,8 @@ def main() -> None:
     ap.add_argument("--replan", type=int, default=60)
     ap.add_argument("--max-frames", type=int, default=20_000)
     ap.add_argument("--seed", type=int, default=5)
+    ap.add_argument("--objective", default="saucer", choices=["saucer", "score"],
+                    help="what the planner optimises")
     ap.add_argument("--random-baseline", action="store_true",
                     help="same episode count with uniform actions, for a matched comparison")
     args = ap.parse_args()
@@ -136,8 +165,8 @@ def main() -> None:
         else:
             info = run_episode(env, args, args.seed + ep, stats)
         rows.append(info)
-        print(f"  ep {ep}: frames {info['frames']:,} visits {info['saucer_visits']} "
-              f"catch_entries {info['catch_entries']} dex {info['dex_caught']}", flush=True)
+        print(f"  ep {ep}: frames {info['frames']:,} score {info['score']:,} "
+              f"visits {info['saucer_visits']} dex {info['dex_caught']}", flush=True)
     env.close()
 
     f = sum(r["frames"] for r in rows)
@@ -147,8 +176,12 @@ def main() -> None:
     k = 10_000.0 / f
     label = "random" if args.random_baseline else "MPC"
     print(f"\n{label}: {len(rows)} episodes, {f:,} frames")
+    scores = np.asarray([r["score"] for r in rows], dtype=float)
     print(f"  visits {v} = {v * k:.2f}/10k   entries {c} = {c * k:.2f}/10k   "
           f"dex {d} = {d / len(rows):.2f}/game")
+    # Score per frame, because score/game is confounded by survival exactly like dex/game was.
+    print(f"  score median {np.median(scores):,.0f}  mean {scores.mean():,.0f}  "
+          f"per 10k frames {scores.sum() * k:,.0f}")
     print("  reference: random 1.18 visits/10k, 0.59 entries/10k, ~0.88 dex/game")
     if stats["decisions"]:
         print(f"  planner: {stats['decisions']} decisions, "
