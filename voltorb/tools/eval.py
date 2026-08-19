@@ -121,6 +121,15 @@ def evaluate(checkpoint: str, args) -> dict:
         # a resampled interval.
         "_scores": get("score"),
         "_frames": get("frames"),
+        # Kept per-episode for the same reason as score: every rate in this table is a ratio
+        # of sums, and the survival confound has faked three results in this project. A
+        # per-episode standard error on a COUNT answers "does this policy do X more often per
+        # game", which is not the question -- a policy that merely survives 16% longer scores
+        # +4 sigma on that. These arrays let the per-10k-frame rate carry a resampled interval.
+        "_alley": get("alley_shots"),
+        "_arms": get("arms"),
+        "_entries": get("catch_entries"),
+        "_dex": get("dex"),
         "visit_rate": get("visits").sum() / get("frames").sum() * 10_000.0,
         "entry_rate": get("catch_entries").sum() / get("frames").sum() * 10_000.0,
         # The arm gate is the ceiling on everything downstream, and it is a count of ramp
@@ -175,24 +184,33 @@ def main() -> None:
         rng = np.random.default_rng(0)
         n_boot = 4000
 
-        def boot_rate(r):
-            sc, fr = r["_scores"], r["_frames"]
-            idx = rng.integers(0, len(sc), size=(n_boot, len(sc)))
-            return sc[idx].sum(1) / fr[idx].sum(1) * 10_000.0
+        def boot_rate(r, key="_scores"):
+            # Resample episodes, not frames: the numerator and denominator have to move
+            # together or the interval is meaningless.
+            num, fr = r[key], r["_frames"]
+            idx = rng.integers(0, len(num), size=(n_boot, len(num)))
+            return num[idx].sum(1) / fr[idx].sum(1) * 10_000.0
 
-        b_base = boot_rate(base)
-        print("\nvs random (score per 10k frames, bootstrapped over episodes):")
-        for r in rows:
-            if r is base:
-                continue
-            b_arm = boot_rate(r)
-            diff = b_arm - b_base
-            lo, hi = np.percentile(diff, [2.5, 97.5])
-            z = diff.mean() / diff.std() if diff.std() else 0.0
-            verdict = "significant" if lo > 0 or hi < 0 else "NOT distinguishable from random"
-            print(f"  {short(r['checkpoint']):26s} {diff.mean():+,.0f} "
-                  f"[95% CI {lo:+,.0f}, {hi:+,.0f}] = {z:+.1f} sigma  ({verdict})")
-        # catch_entries first: it is what the project is now judged on.
+        for label, key, fmt in (
+            ("score per 10k frames", "_scores", ",.0f"),
+            ("ramp shots per 10k frames", "_alley", ".3f"),
+            ("arms per 10k frames", "_arms", ".3f"),
+            ("catch entries per 10k frames", "_entries", ".3f"),
+            ("dex per 10k frames", "_dex", ".3f"),
+        ):
+            b_base = boot_rate(base, key)
+            print(f"\nvs random ({label}, bootstrapped over episodes):")
+            for r in rows:
+                if r is base:
+                    continue
+                diff = boot_rate(r, key) - b_base
+                lo, hi = np.percentile(diff, [2.5, 97.5])
+                z = diff.mean() / diff.std() if diff.std() else 0.0
+                verdict = "significant" if lo > 0 or hi < 0 else "NOT distinguishable from random"
+                print(f"  {short(r['checkpoint']):26s} {diff.mean():+{fmt}} "
+                      f"[95% CI {lo:+{fmt}}, {hi:+{fmt}}] = {z:+.1f} sigma  ({verdict})")
+        # Per-EPISODE counts below. These are reported only because the ledger's older entries
+        # use them; they are confounded by episode length and the rates above supersede them.
         for label, mean_key, se_key in (
             ("alley_shots/ep", "alley_mean", "alley_stderr"),
             ("arms/ep", "arms_mean", "arms_stderr"),
