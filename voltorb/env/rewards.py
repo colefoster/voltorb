@@ -202,25 +202,34 @@ class AlleyReward(DexReward):
     itself is the signal here.
     """
 
-    def __init__(self, alley_bonus: float = 50.0, **kwargs):
+    def __init__(self, alley_bonus: float = 50.0, alley_target: int = 2, **kwargs):
         # ~2 increments/episode under random, so this pays ~100 against 300 for a species and
         # ~9 for the height term -- the same ratio that DexReward already uses, and the arm is
         # a strict precondition for the species, not a competitor to it.
         super().__init__(**kwargs)
         self.alley_bonus = alley_bonus
+        # Pay progress only up to the arm threshold. `alley-01` paid every increment of a byte
+        # that counts 0..3 while the gate opens at 2, so **a third of the events it paid for
+        # were worthless** -- the 2->3 increment changes nothing, and the agent had no way to
+        # prefer the two increments that do. Catch mode then does `xor a` on the byte, so each
+        # arm costs two *fresh* ramps and there is never a reason to buy a third.
+        self.alley_target = alley_target
+
+    def _progress(self, raw) -> float:
+        return min(raw["right_alley_count"], self.alley_target)
 
     def reset(self, raw, gw) -> None:
         super().reset(raw, gw)
-        self._prev_alley = raw["right_alley_count"]
+        self._prev_alley = self._progress(raw)
 
     def step(self, raw, gw, *, ball_lost: bool) -> float:
         reward = super().step(raw, gw, ball_lost=ball_lost)
-        count = raw["right_alley_count"]
+        progress = self._progress(raw)
         # Only pay increases. Catch mode zeroes the byte, and a reset must not read as
         # negative progress -- nor should re-earning it from zero be free.
-        if count > self._prev_alley:
-            reward += self.alley_bonus * (count - self._prev_alley)
-        self._prev_alley = count
+        if progress > self._prev_alley:
+            reward += self.alley_bonus * (progress - self._prev_alley)
+        self._prev_alley = progress
         return reward
 
 
