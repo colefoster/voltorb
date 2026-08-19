@@ -113,6 +113,12 @@ def evaluate(checkpoint: str, args) -> dict:
         # Score per frame, for the same reason: score/game rises with survival on its own.
         # Random measures 9,946,459 per 10k frames; an MPC planner gets 29,426,333 (3.0x).
         "score_rate": get("score").sum() / get("frames").sum() * 10_000.0,
+        # Kept per-episode so score/10k can be bootstrapped. Pinball scores are heavy-tailed
+        # -- the mean runs ~4x the median, and a single jackpot episode can move a ratio of
+        # sums by tens of percent -- so a point estimate on this metric means nothing without
+        # a resampled interval.
+        "_scores": get("score"),
+        "_frames": get("frames"),
         "visit_rate": get("visits").sum() / get("frames").sum() * 10_000.0,
         "entry_rate": get("catch_entries").sum() / get("frames").sum() * 10_000.0,
     }
@@ -155,6 +161,26 @@ def main() -> None:
 
     base = next((r for r in rows if r["checkpoint"] == "random"), None)
     if base and len(rows) > 1:
+        rng = np.random.default_rng(0)
+        n_boot = 4000
+
+        def boot_rate(r):
+            sc, fr = r["_scores"], r["_frames"]
+            idx = rng.integers(0, len(sc), size=(n_boot, len(sc)))
+            return sc[idx].sum(1) / fr[idx].sum(1) * 10_000.0
+
+        b_base = boot_rate(base)
+        print("\nvs random (score per 10k frames, bootstrapped over episodes):")
+        for r in rows:
+            if r is base:
+                continue
+            b_arm = boot_rate(r)
+            diff = b_arm - b_base
+            lo, hi = np.percentile(diff, [2.5, 97.5])
+            z = diff.mean() / diff.std() if diff.std() else 0.0
+            verdict = "significant" if lo > 0 or hi < 0 else "NOT distinguishable from random"
+            print(f"  {short(r['checkpoint']):26s} {diff.mean():+,.0f} "
+                  f"[95% CI {lo:+,.0f}, {hi:+,.0f}] = {z:+.1f} sigma  ({verdict})")
         # catch_entries first: it is what the project is now judged on.
         for label, mean_key, se_key in (
             ("catch_entries/ep", "entries_mean", "entries_stderr"),

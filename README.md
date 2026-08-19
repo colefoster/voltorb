@@ -42,6 +42,11 @@ visits land while the saucer is disarmed. Its higher dex/game is purely survival
 longer. So **dex/game is a survival metric in disguise**: (arms per game) × 0.8, and arms accrue
 with time on the table. That is why 190M+ training steps across eight runs all read as noise.
 
+**So train for points.** Score is ungated and dense, and it is the only objective here with room:
+`score-02` measures **+2.4σ on score per 10,000 frames** (20.0M vs random's 15.2M, bootstrapped
+95% CI [+0.7M, +8.6M]) and **+2.3σ on dex/game** (1.06 vs 0.79) — the first time anything in this
+project has beaten random on the Pokédex objective, achieved by not targeting it.
+
 **Judge on rates, not per-episode counts.** Every policy trained here buys survival time,
 which buys more chances at the objective without improving the chance per frame — and that
 confound has absorbed three experiments. `saucer-03` reads +1.9σ on dex/game and exactly 0.00σ
