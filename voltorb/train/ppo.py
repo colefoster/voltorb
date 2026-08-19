@@ -206,6 +206,11 @@ def parse_args():
                    help="shot stage: start near the goal and walk the start backwards")
     p.add_argument("--saucer-shaping", default="potential", choices=["potential", "raw"])
     p.add_argument("--saucer-weight", type=float, default=None)
+    # score stage only. The weight is transform-specific: 0.1 with "log" reproduces score-02,
+    # 0.003 with "sqrt" spends the same total budget per episode but ranks a 3M jackpot 173x a
+    # 100-point bumper instead of 3.3x. See rewards.ScoreReward.
+    p.add_argument("--score-transform", default="sqrt", choices=["sqrt", "log", "linear"])
+    p.add_argument("--score-weight", type=float, default=None)
     p.add_argument("--video-every", type=int, default=25, help="updates between videos; 0=off")
     p.add_argument("--save-every", type=int, default=50)
     return p.parse_args()
@@ -224,6 +229,10 @@ def main() -> None:
     writer.add_text("args", "\n".join(f"{k}={v}" for k, v in vars(args).items()))
 
     reward_kwargs: dict = {}
+    if args.stage == "score":
+        reward_kwargs["score_transform"] = args.score_transform
+        if args.score_weight is not None:
+            reward_kwargs["score_weight"] = args.score_weight
     if args.stage == "saucer":
         reward_kwargs["saucer_shaping"] = args.saucer_shaping
         if args.saucer_weight is not None:

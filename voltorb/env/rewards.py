@@ -53,19 +53,63 @@ class SurviveReward(Reward):
 
 
 class ScoreReward(SurviveReward):
-    """Stage 2: survival plus points. Score deltas are log-scaled — raw pinball payouts
-    span several orders of magnitude and would otherwise swamp every other term."""
+    """Stage 2: survival plus points.
 
-    def __init__(self, score_weight: float = 0.1, **kwargs):
+    The payout distribution is measured (4 random episodes, 1,099 scoring events): 45% of
+    events pay 100, 21% pay 5,000, 21% pay 50 -- and 3% of events pay >=1,000,000 and carry
+    **71% of all the points**. So the transform on `delta` decides the whole objective.
+
+    `score-02` used `log10(1 + delta)`, which pays 2.0 for a 100-point bumper and 6.5 for a
+    3,000,000-point jackpot -- a 3.3x reward ratio for 30,000x the points. The policy is
+    nearly indifferent between them, and that is what `diag/advantage_std` pinned flat at
+    0.27-0.31 for the whole run looks like from the critic's side.
+
+    `sqrt` is the middle of the two failure modes. Raw linear deltas produced +90 sigma
+    advantage spikes in earlier runs, and a per-million linear term pays ~0.0001 for the 97%
+    of events under 100,000 -- which throws away the reward *density* (97.9% of decisions) that
+    is the only reason this stage trains at all. Under sqrt a 100-point event still pays 0.03,
+    ~3x a max-height frame, while a 3M jackpot pays 5.2: a 173x ratio instead of 3.3x, with the
+    per-frame magnitude still bounded near the 1.0 ball-lost penalty.
+
+    `score_weight` is transform-specific and is set so the *total* score budget per episode is
+    unchanged from `score-02` -- 0.003 * sum(sqrt) = 67/episode against 0.1 * sum(log10) = 72
+    under random play. Only the ranking inside that budget changes, which is the point.
+    """
+
+    def __init__(
+        self,
+        score_weight: float = 0.003,
+        score_transform: str = "sqrt",  # "sqrt" | "log" | "linear"
+        score_clip: float = 15.0,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
+        if score_transform not in ("sqrt", "log", "linear"):
+            raise ValueError(
+                f"score_transform must be 'sqrt', 'log' or 'linear', got {score_transform!r}"
+            )
         self.score_weight = score_weight
+        self.score_transform = score_transform
+        # Never binds on measured data -- the largest single event seen in 8 episodes is
+        # 11,375,000, which is 10.1 after weighting. It exists so a late-stage payout an order
+        # of magnitude past anything measured cannot put a 90-sigma spike into one advantage.
+        self.score_clip = score_clip
+
+    def _score_reward(self, delta: float) -> float:
+        if self.score_transform == "sqrt":
+            value = math.sqrt(delta)
+        elif self.score_transform == "log":
+            value = math.log10(1.0 + delta)
+        else:
+            value = delta / 1e6
+        return min(self.score_weight * value, self.score_clip)
 
     def step(self, raw, gw, *, ball_lost: bool) -> float:
         reward = super().step(raw, gw, ball_lost=ball_lost)
         delta = gw.score - self._prev_score
         self._prev_score = gw.score
         if delta > 0:
-            reward += self.score_weight * math.log10(1.0 + delta)
+            reward += self._score_reward(delta)
         return reward
 
 
