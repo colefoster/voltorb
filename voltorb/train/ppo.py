@@ -221,7 +221,7 @@ def parse_args():
                         "charges the equivalent of -100 and survives 1.8x longer.")
     p.add_argument("--flipper-cost", type=float, default=0.0,
                    help="per-frame cost of holding a flipper up; 0 reproduces every run so far")
-    p.add_argument("--video-every", type=int, default=25, help="updates between videos; 0=off")
+    p.add_argument("--video-every", type=int, default=250, help="updates between videos; 0=off")
     p.add_argument("--save-every", type=int, default=50)
     return p.parse_args()
 
