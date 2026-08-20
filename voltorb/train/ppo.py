@@ -214,6 +214,11 @@ def parse_args():
     # 100-point bumper instead of 3.3x -- which score-03 ran, and lost. See rewards.ScoreReward.
     p.add_argument("--score-transform", default="log", choices=["log", "sqrt", "linear"])
     p.add_argument("--score-weight", type=float, default=None)
+    p.add_argument("--ball-lost-penalty", type=float, default=None,
+                   help="cost of draining. Default 1.0 is ~0.7% of a ~400 episode return, so "
+                        "draining is effectively free and only the forgone future reward "
+                        "discourages it. The MPC planner, the only thing that plays well, "
+                        "charges the equivalent of -100 and survives 1.8x longer.")
     p.add_argument("--flipper-cost", type=float, default=0.0,
                    help="per-frame cost of holding a flipper up; 0 reproduces every run so far")
     p.add_argument("--video-every", type=int, default=25, help="updates between videos; 0=off")
@@ -236,6 +241,8 @@ def main() -> None:
     reward_kwargs: dict = {}
     if args.flipper_cost:
         reward_kwargs["flipper_cost"] = args.flipper_cost
+    if args.ball_lost_penalty is not None:
+        reward_kwargs["ball_lost_penalty"] = args.ball_lost_penalty
     if args.stage == "score":
         reward_kwargs["score_transform"] = args.score_transform
         if args.score_weight is not None:
