@@ -215,7 +215,7 @@ def parse_args():
     p.add_argument("--score-transform", default="log", choices=["log", "sqrt", "linear"])
     p.add_argument("--score-weight", type=float, default=None)
     p.add_argument("--ball-lost-penalty", type=float, default=None,
-                   help="cost of draining. Default 1.0 is ~0.7% of a ~400 episode return, so "
+                   help="cost of draining. Default 1.0 is ~0.7%% of a ~400 episode return, so "
                         "draining is effectively free and only the forgone future reward "
                         "discourages it. The MPC planner, the only thing that plays well, "
                         "charges the equivalent of -100 and survives 1.8x longer.")
