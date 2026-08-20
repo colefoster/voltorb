@@ -15,6 +15,17 @@ uv run python -m voltorb.tools.validate --frames 40000 --games 3
 Expected ROM: SHA1 `9402014d14969432142abfde728c6f1a10ee4dac` (matches pret/pokepinball's
 byte-matching build). ROMs are gitignored and never committed.
 
+## Watching it
+
+```sh
+uv run python -m voltorb.tools.dashboard    # -> http://localhost:9881
+```
+
+One page: every run in `runs/` with its TensorBoard scalars (three overlaid at a time, no
+tensorboard server), the training clips, and a live policy playing the game as MJPEG with a
+checkpoint/stage picker. The player only boots PyBoy while a browser is watching, so it is
+safe to leave open next to a training run. `tools/live.py` is the same live view alone.
+
 ## Design
 
 | | |

@@ -1,0 +1,393 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>voltorb — dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%23f2c14e'/%3E%3Cpath d='M2 16h28' stroke='%230b0d12' stroke-width='3'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%230b0d12'/%3E%3C/svg%3E">
+<style>
+  :root{
+    color-scheme: dark;
+    --bg:#0b0d12; --panel:#11141b; --panel2:#151924; --line:#232a38;
+    --fg:#c9d1d9; --dim:#7d8899; --accent:#f2c14e; --live:#3fb950;
+    --font: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 var(--font)}
+  a{color:var(--accent)}
+  header{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--line);
+         position:sticky;top:0;background:rgba(11,13,18,.94);backdrop-filter:blur(6px);z-index:20}
+  header h1{font-size:13px;margin:0;letter-spacing:.14em;text-transform:uppercase;color:var(--fg)}
+  header .sp{flex:1}
+  .pill{border:1px solid var(--line);border-radius:999px;padding:2px 10px;color:var(--dim);font-size:11px}
+  .pill.live{color:var(--live);border-color:#1c3f27}
+  .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--live);margin-right:6px;
+       box-shadow:0 0 0 0 rgba(63,185,80,.6);animation:pulse 2s infinite}
+  @keyframes pulse{70%{box-shadow:0 0 0 7px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
+
+  main{display:grid;grid-template-columns:210px minmax(0,1fr) 430px;gap:16px;padding:16px;align-items:start}
+  @media (max-width:1380px){ main{grid-template-columns:200px minmax(0,1fr)} #live{grid-column:1/-1} }
+  @media (max-width:900px){ main{grid-template-columns:1fr} }
+
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+  .card h2{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+           margin:0;padding:10px 12px;border-bottom:1px solid var(--line);font-weight:400;
+           display:flex;align-items:center;gap:8px}
+  .card h2 .sp{flex:1}
+
+  /* runs */
+  #runs .row{display:block;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid #171c26;
+             color:var(--fg);font:inherit;padding:8px 12px;cursor:pointer}
+  #runs .row:hover{background:var(--panel2)}
+  #runs .row.sel{background:#1a2030}
+  #runs .row .nm{display:flex;align-items:center;gap:6px}
+  #runs .row .sw{width:8px;height:8px;border-radius:2px;background:transparent;border:1px solid #303848;flex:0 0 auto}
+  #runs .row .meta{color:var(--dim);font-size:11px;padding-left:14px}
+  .hint{color:var(--dim);font-size:11px;padding:8px 12px}
+
+  /* kpis */
+  #kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:10px;margin-bottom:16px}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+  .kpi .k{color:var(--dim);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+  .kpi .v{font-size:19px;margin-top:3px;font-variant-numeric:tabular-nums}
+
+  /* charts */
+  .group{margin-bottom:16px}
+  .group>h3{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
+            margin:0 0 8px;font-weight:400}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:10px}
+  .chart{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px 4px}
+  .chart .t{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .chart .t b{font-weight:400;font-size:12px}
+  .chart .t span{color:var(--dim);font-size:11px;font-variant-numeric:tabular-nums}
+  canvas{width:100%;height:118px;display:block}
+
+  /* live */
+  #live{position:sticky;top:58px}
+  #live img{width:100%;aspect-ratio:160/144;image-rendering:pixelated;background:#000;display:block}
+  .ctl{display:grid;grid-template-columns:auto 1fr;gap:8px 10px;align-items:center;padding:10px 12px;
+       border-bottom:1px solid var(--line)}
+  .ctl label{color:var(--dim);font-size:11px}
+  select,input[type=range]{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--line);
+          border-radius:6px;padding:4px 6px;font:inherit}
+  table.st{width:100%;border-collapse:collapse;padding:4px}
+  table.st th{text-align:left;color:var(--dim);font-weight:400;padding:3px 12px;font-size:11px}
+  table.st td{text-align:right;padding:3px 12px;font-variant-numeric:tabular-nums}
+  .acts{padding:8px 12px 12px}
+  .act{display:grid;grid-template-columns:52px 1fr 42px;gap:8px;align-items:center;margin-top:4px;font-size:11px}
+  .act .bar{height:6px;background:#1c2230;border-radius:3px;overflow:hidden}
+  .act .bar i{display:block;height:100%;background:var(--accent);width:0;transition:width .15s}
+  .act .n{color:var(--dim);text-align:right;font-variant-numeric:tabular-nums}
+  .act.on .n, .act.on b{color:var(--accent)}
+
+  /* videos */
+  #vids .list{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px;max-height:118px;overflow:auto}
+  #vids button{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:6px;
+               padding:3px 8px;font:inherit;font-size:11px;cursor:pointer}
+  #vids button:hover{border-color:var(--accent);color:var(--accent)}
+  #vids video{width:100%;max-width:480px;display:block;margin:0 12px 12px;border:1px solid var(--line);border-radius:6px}
+  .tip{position:fixed;pointer-events:none;background:#0e1219;border:1px solid var(--line);border-radius:6px;
+       padding:5px 8px;font-size:11px;white-space:pre;z-index:50;display:none;box-shadow:0 6px 20px #0008}
+</style>
+
+<header>
+  <h1>voltorb</h1>
+  <span class="pill" id="hdr-run">no run</span>
+  <span class="pill" id="hdr-live" hidden><span class="dot"></span>training</span>
+  <span class="sp"></span>
+  <label class="pill" style="display:flex;gap:8px;align-items:center">
+    smoothing <input type="range" id="smooth" min="0" max="0.95" step="0.05" value="0.6" style="width:90px">
+  </label>
+  <span class="pill" id="hdr-clock">—</span>
+</header>
+
+<main>
+  <section class="card" id="runs">
+    <h2>runs <span class="sp"></span><span id="runcount" style="color:var(--dim)"></span></h2>
+    <div id="runlist"></div>
+    <div class="hint">click = select · shift-click = overlay (max 3)</div>
+  </section>
+
+  <section>
+    <div id="kpis"></div>
+    <div id="charts"></div>
+    <section class="card" id="vids" hidden>
+      <h2>training videos</h2>
+      <div class="list" id="vidlist"></div>
+      <video id="vidplayer" controls hidden></video>
+    </section>
+  </section>
+
+  <section class="card" id="live">
+    <h2>live policy <span class="sp"></span><span id="livestatus" style="color:var(--dim)"></span></h2>
+    <img id="screen" alt="live game">
+    <div class="ctl">
+      <label>checkpoint</label><select id="ckpt"></select>
+      <label>stage</label><select id="stage"></select>
+      <label>speed</label><input type="range" id="speed" min="0.25" max="8" step="0.25" value="1">
+    </div>
+    <table class="st" id="stats"></table>
+    <div class="acts" id="acts"></div>
+  </section>
+</main>
+<div class="tip" id="tip"></div>
+
+<script>
+const COLORS = ["#f2c14e", "#58a6ff", "#f778ba"];
+const SECTIONS = [["charts","training"],["game","game outcomes"],["losses","losses"],["diag","diagnostics"]];
+const fmt = n => n === null || n === undefined || Number.isNaN(n) ? "—"
+  : Math.abs(n) >= 1e6 ? (n/1e6).toFixed(2)+"M"
+  : Math.abs(n) >= 1e4 ? (n/1e3).toFixed(1)+"k"
+  : Math.abs(n) >= 100 ? n.toFixed(0)
+  : Math.abs(n) >= 1 ? n.toFixed(2)
+  : Math.abs(n) >= 0.001 || n === 0 ? n.toFixed(4) : n.toExponential(1);
+const ago = s => s < 90 ? Math.round(s)+"s ago" : s < 5400 ? Math.round(s/60)+"m ago"
+  : s < 172800 ? Math.round(s/3600)+"h ago" : Math.round(s/86400)+"d ago";
+
+let selected = [];            // run names; [0] is primary
+let runs = [], data = {}, charts = new Map();
+
+/* ------------------------------------------------------------------ charts */
+function ema(vals, a){
+  if (!a) return vals;
+  let out = [], prev = null, debias = 0;
+  for (const v of vals){
+    if (v === null){ out.push(null); continue; }
+    prev = prev === null ? 0 : prev;
+    prev = prev*a + v*(1-a); debias = debias*a + (1-a);
+    out.push(prev/debias);
+  }
+  return out;
+}
+
+function draw(cv, series, smooth, hover){
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0,0,W,H);
+  const P = {l:52, r:8, t:8, b:18};
+  const live = series.filter(s => s.steps.length);
+  if (!live.length) return;
+  const smoothed = live.map(s => ema(s.values, smooth));
+  let xs = [], ys = [];
+  live.forEach((s,i) => { xs.push(...s.steps); ys.push(...smoothed[i].filter(v => v !== null && isFinite(v))); });
+  let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  if (x1 === x0) x1 = x0 + 1;
+  const pad = (y1 - y0) * 0.12 || Math.abs(y1)*0.1 || 1;
+  y0 -= pad; y1 += pad;
+  const X = v => P.l + (v-x0)/(x1-x0) * (W-P.l-P.r);
+  const Y = v => H-P.b - (v-y0)/(y1-y0) * (H-P.t-P.b);
+
+  g.font = "10px ui-monospace, monospace"; g.textBaseline = "middle";
+  g.strokeStyle = "#1b2130"; g.fillStyle = "#7d8899"; g.lineWidth = 1;
+  for (let i = 0; i <= 3; i++){
+    const v = y0 + (y1-y0)*i/3, y = Math.round(Y(v)) + .5;
+    g.beginPath(); g.moveTo(P.l, y); g.lineTo(W-P.r, y); g.stroke();
+    g.textAlign = "right"; g.fillText(fmt(v), P.l-6, y);
+  }
+  g.textAlign = "left";  g.fillText(fmt(x0), P.l, H-8);
+  g.textAlign = "right"; g.fillText(fmt(x1), W-P.r, H-8);
+
+  live.forEach((s,i) => {
+    // raw underneath, smoothed on top — the spread is the variance you are eyeballing
+    for (const [vals, alpha, w] of [[s.values, 0.22, 1], [smoothed[i], 1, 1.6]]){
+      g.beginPath(); g.globalAlpha = alpha; g.strokeStyle = s.color; g.lineWidth = w;
+      let pen = false;
+      vals.forEach((v,k) => {
+        if (v === null || !isFinite(v)){ pen = false; return; }
+        const px = X(s.steps[k]), py = Y(v);
+        pen ? g.lineTo(px,py) : g.moveTo(px,py); pen = true;
+      });
+      g.stroke();
+    }
+  });
+  g.globalAlpha = 1;
+
+  if (hover !== null && hover >= P.l && hover <= W-P.r){
+    const step = x0 + (hover-P.l)/(W-P.l-P.r)*(x1-x0);
+    g.strokeStyle = "#3a445a"; g.beginPath(); g.moveTo(hover, P.t); g.lineTo(hover, H-P.b); g.stroke();
+    const rows = [];
+    live.forEach((s,i) => {
+      let best = 0;
+      for (let k = 1; k < s.steps.length; k++)
+        if (Math.abs(s.steps[k]-step) < Math.abs(s.steps[best]-step)) best = k;
+      const v = smoothed[i][best];
+      if (v === null) return;
+      g.fillStyle = s.color; g.beginPath(); g.arc(X(s.steps[best]), Y(v), 2.6, 0, 7); g.fill();
+      rows.push(`${s.label}  ${fmt(v)}`);
+    });
+    cv._tip = "step " + fmt(step) + "\n" + rows.join("\n");
+  } else cv._tip = null;
+}
+
+function chartCard(tag){
+  const el = document.createElement("div");
+  el.className = "chart";
+  el.innerHTML = `<div class="t"><b>${tag.split("/")[1] || tag}</b><span></span></div><canvas></canvas>`;
+  const cv = el.querySelector("canvas");
+  cv.addEventListener("mousemove", e => {
+    const r = cv.getBoundingClientRect();
+    cv._hover = e.clientX - r.left; render(tag);
+    const tip = document.getElementById("tip");
+    if (cv._tip){ tip.style.display = "block"; tip.textContent = cv._tip;
+      tip.style.left = Math.min(innerWidth-160, e.clientX+12)+"px"; tip.style.top = (e.clientY+12)+"px"; }
+  });
+  cv.addEventListener("mouseleave", () => {
+    cv._hover = null; render(tag); document.getElementById("tip").style.display = "none";
+  });
+  charts.set(tag, el);
+  return el;
+}
+
+function render(tag){
+  const el = charts.get(tag); if (!el) return;
+  const cv = el.querySelector("canvas");
+  const smooth = +document.getElementById("smooth").value;
+  const series = selected.map((name, i) => {
+    const s = (data[name] || {})[tag];
+    return s ? {label:name, color:COLORS[i], steps:s.steps, values:s.values} : null;
+  }).filter(Boolean);
+  const last = series.length ? series[0].values.filter(v => v !== null).slice(-1)[0] : null;
+  el.querySelector(".t span").textContent = fmt(last);
+  draw(cv, series, smooth, cv._hover ?? null);
+}
+
+function rebuild(){
+  const host = document.getElementById("charts");
+  const tags = new Set();
+  selected.forEach(n => Object.keys(data[n] || {}).forEach(t => tags.add(t)));
+  const wanted = [...tags].filter(t => t.includes("/")).sort();
+  const sig = selected.join("|") + "::" + wanted.join(",");
+  if (host._sig !== sig){
+    host._sig = sig; host.innerHTML = ""; charts.clear();
+    for (const [prefix, title] of SECTIONS){
+      const mine = wanted.filter(t => t.startsWith(prefix + "/"));
+      if (!mine.length) continue;
+      const box = document.createElement("div");
+      box.className = "group";
+      box.innerHTML = `<h3>${title}</h3><div class="grid"></div>`;
+      mine.forEach(t => box.querySelector(".grid").appendChild(chartCard(t)));
+      host.appendChild(box);
+    }
+  }
+  charts.forEach((_, tag) => render(tag));
+  kpis();
+}
+
+const KPI = [["charts/episodic_return","ep return"],["charts/episodic_length","ep length"],
+  ["game/dex_caught","dex caught"],["game/score","score"],["game/catch_entries","catch entries"],
+  ["losses/entropy","entropy"],["diag/advantage_std","adv std"],["charts/steps_per_second","steps/s"]];
+function kpis(){
+  const d = data[selected[0]] || {};
+  const steps = Math.max(0, ...Object.values(d).map(s => s.steps.at(-1) || 0));
+  const cells = [`<div class="kpi"><div class="k">total steps</div><div class="v">${fmt(steps)}</div></div>`];
+  for (const [tag, label] of KPI)
+    if (d[tag]) cells.push(`<div class="kpi"><div class="k">${label}</div><div class="v">${fmt(d[tag].last)}</div></div>`);
+  document.getElementById("kpis").innerHTML = cells.join("");
+}
+
+/* ------------------------------------------------------------------ runs */
+async function loadScalars(){
+  if (!selected.length) return;
+  data = await (await fetch("/api/scalars?runs=" + selected.join(","))).json();
+  rebuild(); videos();
+}
+
+function videos(){
+  const run = runs.find(r => r.name === selected[0]);
+  const box = document.getElementById("vids"), list = document.getElementById("vidlist");
+  box.hidden = !(run && run.videos.length);
+  if (box.hidden) return;
+  list.innerHTML = run.videos.map(v => `<button data-v="${v}">${v.replace(".mp4","")}</button>`).join("");
+  list.querySelectorAll("button").forEach(b => b.onclick = () => {
+    const p = document.getElementById("vidplayer");
+    p.hidden = false; p.src = `/api/video/${run.name}/videos/${b.dataset.v}`; p.play();
+  });
+}
+
+function runList(){
+  const host = document.getElementById("runlist");
+  document.getElementById("runcount").textContent = runs.length;
+  host.innerHTML = runs.map(r => {
+    const i = selected.indexOf(r.name);
+    const sw = i >= 0 ? `style="background:${COLORS[i]};border-color:${COLORS[i]}"` : "";
+    return `<button class="row ${i>=0?"sel":""}" data-n="${r.name}">
+      <div class="nm"><span class="sw" ${sw}></span>${r.active?'<span class="dot"></span>':""}${r.name}</div>
+      <div class="meta">${fmt(r.steps)} steps · ${ago(r.age)}</div></button>`;
+  }).join("");
+  host.querySelectorAll(".row").forEach(b => b.onclick = e => {
+    const n = b.dataset.n;
+    if (e.shiftKey){
+      const i = selected.indexOf(n);
+      if (i > 0) selected.splice(i,1); else if (i < 0 && selected.length < 3) selected.push(n);
+    } else selected = [n];
+    runList(); loadScalars();
+  });
+
+  const live = runs.find(r => r.active);
+  document.getElementById("hdr-live").hidden = !live;
+  if (live) document.getElementById("hdr-live").lastChild.textContent = " training " + live.name;
+  document.getElementById("hdr-run").innerHTML = selected.length
+    ? selected.map((n,i) => `<span style="color:${COLORS[i]}">■</span> ${n}`).join(" &nbsp;")
+    : "no run";
+}
+
+async function loadRuns(){
+  const j = await (await fetch("/api/runs")).json();
+  runs = j.runs;
+  if (!document.getElementById("stage").options.length)
+    document.getElementById("stage").innerHTML = j.stages.map(s => `<option>${s}</option>`).join("");
+  const ck = document.getElementById("ckpt");
+  const opts = runs.flatMap(r => r.checkpoints.map(c => `runs/${r.name}/${c}`));
+  if (ck._opts !== opts.join()){
+    ck._opts = opts.join();
+    const keep = ck.value;
+    ck.innerHTML = opts.map(o => `<option>${o}</option>`).join("");
+    if (opts.includes(keep)) ck.value = keep;
+  }
+  if (!selected.length && runs.length){ selected = [runs[0].name]; loadScalars(); }
+  runList();
+  document.getElementById("hdr-clock").textContent = new Date().toLocaleTimeString();
+}
+
+/* ------------------------------------------------------------------ live */
+const ACTIONS = ["none","left","right","both"];
+function actionBars(p, active){
+  document.getElementById("acts").innerHTML = ACTIONS.map((a,i) => `
+    <div class="act ${i===active?"on":""}"><b>${a}</b>
+      <div class="bar"><i style="width:${((p||[])[i]||0)*100}%"></i></div>
+      <div class="n">${(((p||[])[i]||0)*100).toFixed(0)}%</div></div>`).join("");
+}
+const STAT = [["episode","episode"],["frame","frame"],["reward","reward"],["value","V(s)"],
+  ["score","score"],["balls_left","balls left"],["dex_caught","dex caught"],
+  ["stage_id","game stage"],["fps","fps"],["reloads","ckpt reloads"]];
+async function tickLive(){
+  try{
+    const s = await (await fetch("/api/stats")).json();
+    document.getElementById("livestatus").textContent =
+      s.status === "playing" ? (s.checkpoint||"").split("/").slice(-2).join("/") : (s.note || s.status);
+    document.getElementById("stats").innerHTML = STAT.filter(([k]) => k in s)
+      .map(([k,l]) => `<tr><th>${l}</th><td>${typeof s[k]==="number"?s[k].toLocaleString():s[k]}</td></tr>`).join("");
+    actionBars(s.probs, s.action);
+    if (s.load_error) document.getElementById("livestatus").textContent = "cannot load " + s.load_error;
+    if (s.want && !window._synced && document.getElementById("ckpt").options.length){
+      window._synced = true;
+      const ck = document.getElementById("ckpt");
+      if ([...ck.options].some(o => o.value === s.want.checkpoint)) ck.value = s.want.checkpoint;
+      document.getElementById("stage").value = s.want.stage;
+      document.getElementById("speed").value = s.want.speed;
+    }
+  }catch(e){}
+  setTimeout(tickLive, 400);
+}
+function pushLive(){
+  fetch("/api/live", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({checkpoint: document.getElementById("ckpt").value,
+      stage: document.getElementById("stage").value,
+      speed: +document.getElementById("speed").value})});
+}
+["ckpt","stage","speed"].forEach(id => document.getElementById(id).onchange = pushLive);
+document.getElementById("smooth").oninput = () => charts.forEach((_,t) => render(t));
+addEventListener("resize", () => charts.forEach((_,t) => render(t)));
+
+document.getElementById("screen").src = "/stream";
+loadRuns(); tickLive();
+setInterval(loadRuns, 5000);
+setInterval(loadScalars, 5000);
+</script>
