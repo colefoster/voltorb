@@ -23,8 +23,10 @@
   @keyframes pulse{70%{box-shadow:0 0 0 7px rgba(63,185,80,0)}100%{box-shadow:0 0 0 0 rgba(63,185,80,0)}}
 
   main{display:grid;grid-template-columns:210px minmax(0,1fr) 430px;gap:16px;padding:16px;align-items:start}
-  @media (max-width:1380px){ main{grid-template-columns:200px minmax(0,1fr)} #live{grid-column:1/-1} }
-  @media (max-width:900px){ main{grid-template-columns:1fr} }
+  /* below 1380 the live column drops under the charts and spans full width; without a cap the
+     fixed-aspect-ratio game screen stretches to that width (~3x taller too), burying the controls */
+  @media (max-width:1380px){ main{grid-template-columns:200px minmax(0,1fr)} #live{grid-column:1/-1;max-width:430px} }
+  @media (max-width:900px){ main{grid-template-columns:1fr} #runs{order:1} }
 
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px}
   .card h2{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);
@@ -83,6 +85,7 @@
                padding:3px 8px;font:inherit;font-size:11px;cursor:pointer}
   #vids button:hover{border-color:var(--accent);color:var(--accent)}
   #vids video{width:100%;max-width:480px;display:block;margin:0 12px 12px;border:1px solid var(--line);border-radius:6px}
+  #vids video[hidden]{display:none} /* [hidden] alone loses to the id+tag rule above; restate it here */
   .tip{position:fixed;pointer-events:none;background:#0e1219;border:1px solid var(--line);border-radius:6px;
        padding:5px 8px;font-size:11px;white-space:pre;z-index:50;display:none;box-shadow:0 6px 20px #0008}
 </style>
@@ -226,7 +229,9 @@ function chartCard(tag){
     cv._hover = e.clientX - r.left; render(tag);
     const tip = document.getElementById("tip");
     if (cv._tip){ tip.style.display = "block"; tip.textContent = cv._tip;
-      tip.style.left = Math.min(innerWidth-160, e.clientX+12)+"px"; tip.style.top = (e.clientY+12)+"px"; }
+      // measure before placing — overlay tooltips (multiple run rows) can run wider/taller than a guess allows
+      tip.style.left = Math.min(innerWidth-tip.offsetWidth-8, e.clientX+12)+"px";
+      tip.style.top = Math.min(innerHeight-tip.offsetHeight-8, e.clientY+12)+"px"; }
   });
   cv.addEventListener("mouseleave", () => {
     cv._hover = null; render(tag); document.getElementById("tip").style.display = "none";
