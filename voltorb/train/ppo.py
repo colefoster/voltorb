@@ -214,6 +214,8 @@ def parse_args():
     # 100-point bumper instead of 3.3x -- which score-03 ran, and lost. See rewards.ScoreReward.
     p.add_argument("--score-transform", default="log", choices=["log", "sqrt", "linear"])
     p.add_argument("--score-weight", type=float, default=None)
+    p.add_argument("--flipper-cost", type=float, default=0.0,
+                   help="per-frame cost of holding a flipper up; 0 reproduces every run so far")
     p.add_argument("--video-every", type=int, default=25, help="updates between videos; 0=off")
     p.add_argument("--save-every", type=int, default=50)
     return p.parse_args()
@@ -232,6 +234,8 @@ def main() -> None:
     writer.add_text("args", "\n".join(f"{k}={v}" for k, v in vars(args).items()))
 
     reward_kwargs: dict = {}
+    if args.flipper_cost:
+        reward_kwargs["flipper_cost"] = args.flipper_cost
     if args.stage == "score":
         reward_kwargs["score_transform"] = args.score_transform
         if args.score_weight is not None:

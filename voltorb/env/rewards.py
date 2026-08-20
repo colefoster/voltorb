@@ -39,14 +39,22 @@ class SurviveReward(Reward):
         ball_lost_penalty: float = 1.0,
         height_weight: float = 0.01,
         alive_bonus: float = 0.0,
+        flipper_cost: float = 0.0,
     ):
         self.ball_lost_penalty = ball_lost_penalty
         self.height_weight = height_weight
         self.alive_bonus = alive_bonus
+        # Per-frame cost of holding a flipper up. Off by default so every earlier run is
+        # reproducible. At 0.001 it charges ~20 over a 20,000-frame episode against ~10 for the
+        # height term and ~100 for the alley bonus -- enough to make resting on the flippers
+        # cost something, not enough to outbid the objective.
+        self.flipper_cost = flipper_cost
 
     def step(self, raw, gw, *, ball_lost: bool) -> float:
         height = 1.0 - min(raw["ball_y"], PLAYFIELD_HEIGHT) / PLAYFIELD_HEIGHT
         reward = self.alive_bonus + self.height_weight * height
+        if self.flipper_cost:
+            reward -= self.flipper_cost * raw.get("flipper_held", 0.0)
         if ball_lost:
             reward -= self.ball_lost_penalty
         return reward

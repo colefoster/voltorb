@@ -441,6 +441,11 @@ class PinballEnv(gym.Env):
             self._arms += 1
         self._prev_ready = ready
 
+        # For the flipper-cost term. Actions are HELD states, not presses, so a policy can sit
+        # with a flipper up forever at no cost -- measured on alley-02: a flipper is up on
+        # **99.6%** of frames and the policy switches between left and right every ~2.6 frames.
+        # That is not timing a shot, it is holding the flippers and jittering.
+        raw["flipper_held"] = float(self._held != ACTION_NONE)
         raw["catch_entries"] = float(self._catch_entries)
         raw["saucer_visits"] = float(self._saucer_visits)
         raw["alley_shots"] = float(self._alley_shots)
