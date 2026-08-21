@@ -1,0 +1,46 @@
+UserWarning: Using SDL2 binaries from pysdl2-dll 2.32.10
+
+checkpoint                   n        frames +- se  visits   catchmd +- se    score/10k  vis/10k  ent/10k  ramp/10k  arm/10k    dex/game +- se  dex>=1
+random                     300      17,476 +-   422    2.12      1.02 +-0.04   16,281,246     1.21     0.58      0.91     0.43       0.91 +- 0.04     72%
+runs/alley-03/final.pt     300      17,976 +-   445    2.21      1.17 +-0.05   16,642,846     1.23     0.65      1.26     0.52       0.97 +- 0.05     74%
+runs/alley-long/final.pt   300      20,192 +-   509    2.34      1.44 +-0.05   17,271,618     1.16     0.71      1.50     0.63       1.16 +- 0.05     82%
+
+vs random (score per 10k frames, bootstrapped over episodes):
+  runs/alley-03/final.pt     +375,867 [95% CI -1,637,536, +2,467,120] = +0.4 sigma  (NOT distinguishable from random)
+  runs/alley-long/final.pt   +989,506 [95% CI -792,634, +2,800,227] = +1.1 sigma  (NOT distinguishable from random)
+
+vs random (ramp shots per 10k frames, bootstrapped over episodes):
+  runs/alley-03/final.pt     +0.351 [95% CI +0.246, +0.456] = +6.6 sigma  (significant)
+  runs/alley-long/final.pt   +0.597 [95% CI +0.493, +0.702] = +11.2 sigma  (significant)
+
+vs random (arms per 10k frames, bootstrapped over episodes):
+  runs/alley-03/final.pt     +0.094 [95% CI +0.026, +0.162] = +2.7 sigma  (significant)
+  runs/alley-long/final.pt   +0.199 [95% CI +0.134, +0.264] = +6.0 sigma  (significant)
+
+vs random (catch entries per 10k frames, bootstrapped over episodes):
+  runs/alley-03/final.pt     +0.069 [95% CI +0.027, +0.112] = +3.2 sigma  (significant)
+  runs/alley-long/final.pt   +0.131 [95% CI +0.089, +0.173] = +6.2 sigma  (significant)
+
+vs random (dex per 10k frames, bootstrapped over episodes):
+  runs/alley-03/final.pt     +0.021 [95% CI -0.026, +0.068] = +0.9 sigma  (NOT distinguishable from random)
+  runs/alley-long/final.pt   +0.057 [95% CI +0.013, +0.101] = +2.5 sigma  (significant)
+
+vs random (alley_shots/ep, in standard errors):
+  runs/alley-03/final.pt     +0.68 = +5.5 sigma  (significant)
+  runs/alley-long/final.pt   +1.45 = +9.9 sigma  (significant)
+
+vs random (arms/ep, in standard errors):
+  runs/alley-03/final.pt     +0.19 = +2.5 sigma  (significant)
+  runs/alley-long/final.pt   +0.52 = +6.4 sigma  (significant)
+
+vs random (catch_entries/ep, in standard errors):
+  runs/alley-03/final.pt     +0.15 = +2.6 sigma  (significant)
+  runs/alley-long/final.pt   +0.42 = +6.7 sigma  (significant)
+
+vs random (saucer_visits/ep, in standard errors):
+  runs/alley-03/final.pt     +0.09 = +0.6 sigma  (NOT distinguishable from random)
+  runs/alley-long/final.pt   +0.22 = +1.5 sigma  (NOT distinguishable from random)
+
+vs random (dex/game, in standard errors):
+  runs/alley-03/final.pt     +0.06 = +1.0 sigma  (NOT distinguishable from random)
+  runs/alley-long/final.pt   +0.26 = +4.1 sigma  (significant)
