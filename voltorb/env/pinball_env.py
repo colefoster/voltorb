@@ -445,13 +445,12 @@ class PinballEnv(gym.Env):
         # with a flipper up forever at no cost -- measured on alley-02: a flipper is up on
         # **99.6%** of frames and the policy switches between left and right every ~2.6 frames.
         # That is not timing a shot, it is holding the flippers and jittering.
-        # Counted, not a boolean: a flat per-frame charge prices BOTH the same as one flipper,
-        # so ACTION_BOTH strictly dominates ACTION_LEFT/ACTION_RIGHT -- same cost, more ball
-        # contact. Measured on alley-long: p(left) = p(right) = 0.000 and the policy uses only
-        # NONE and BOTH, which makes an aimed shot unrepresentable.
-        raw["flipper_held"] = 2.0 if self._held == ACTION_BOTH else float(
-            self._held != ACTION_NONE
-        )
+        # Deliberately a boolean, not a count of raised flippers. A flat charge does price BOTH
+        # the same as one flipper, so ACTION_BOTH dominates ACTION_LEFT/ACTION_RIGHT on cost --
+        # and alley-long duly collapsed to p(left) = p(right) = 0.000. Charging 2x for BOTH was
+        # tried (alley-sym) and made every honest metric worse: both flippers together is the
+        # effective stroke for the right ramp, not an artefact of mispricing. See data/runs.md.
+        raw["flipper_held"] = float(self._held != ACTION_NONE)
         raw["catch_entries"] = float(self._catch_entries)
         raw["saucer_visits"] = float(self._saucer_visits)
         raw["alley_shots"] = float(self._alley_shots)
