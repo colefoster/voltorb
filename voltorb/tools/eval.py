@@ -24,7 +24,13 @@ import numpy as np
 import torch
 from torch.distributions import Categorical
 
-from voltorb.train.ppo import ActorCritic, _env_thunk, load_checkpoint
+from voltorb.env import OBS_DIM
+from voltorb.train.ppo import (
+    ActorCritic,
+    _env_thunk,
+    check_obs_dim,
+    load_checkpoint,
+)
 
 
 def evaluate(checkpoint: str, args) -> dict:
@@ -44,7 +50,9 @@ def evaluate(checkpoint: str, args) -> dict:
     model = None
     if checkpoint != "random":
         model = ActorCritic()
-        model.load_state_dict(load_checkpoint(checkpoint)["model"])
+        ckpt = load_checkpoint(checkpoint)
+        check_obs_dim(ckpt, OBS_DIM, checkpoint)
+        model.load_state_dict(ckpt["model"])
         model.eval()
 
     rng = np.random.default_rng(args.seed)

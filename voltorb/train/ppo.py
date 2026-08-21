@@ -187,6 +187,30 @@ def load_checkpoint(path, map_location="cpu") -> dict:
     return {"model": blob, "optimizer": None, "update": 0, "config": None}
 
 
+def check_obs_dim(ckpt: dict, obs_dim: int, path) -> None:
+    """Assert the checkpoint's observation width matches the env we just built.
+
+    Stages change the observation -- the arm-gate fields went in for `alley` and shifted
+    OBS_DIM under every earlier checkpoint -- so loading across that boundary is a real
+    failure mode, not a hypothetical one. Old checkpoints carry no config; infer the width
+    from the first trunk weight instead so they are still checked.
+    """
+    ckpt_dim = None
+    config = ckpt.get("config") or {}
+    if config.get("obs_dim"):
+        ckpt_dim = int(config["obs_dim"])
+    else:
+        weight = ckpt["model"].get("trunk.0.weight")
+        if weight is not None:
+            ckpt_dim = int(weight.shape[1])
+    if ckpt_dim is not None and ckpt_dim != obs_dim:
+        raise ValueError(
+            f"{path}: checkpoint has obs_dim {ckpt_dim}, this env builds {obs_dim}. "
+            "The observation changed between these two stages; that policy cannot be loaded."
+        )
+    return config.get("args", {}).get("stage")
+
+
 def _int_tuple(s: str) -> tuple:
     return tuple(int(x) for x in s.split(",") if x.strip())
 
@@ -405,10 +429,20 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, eps=1e-5)
     first_update = 1
     if args.init_from:
-        model.load_state_dict(load_checkpoint(args.init_from, device)["model"])
+        ckpt = load_checkpoint(args.init_from, device)
+        prev_stage = check_obs_dim(ckpt, OBS_DIM, args.init_from)
+        if prev_stage and prev_stage != args.stage:
+            print(
+                f"warning: warm-starting {args.stage} from a {prev_stage} checkpoint. "
+                "Stages change the observation; the widths match, so check the field "
+                "*meanings* still do.",
+                flush=True,
+            )
+        model.load_state_dict(ckpt["model"])
         print(f"warm-started from {args.init_from}")
     if args.resume_from:
         ckpt = load_checkpoint(args.resume_from, device)
+        check_obs_dim(ckpt, OBS_DIM, args.resume_from)
         model.load_state_dict(ckpt["model"])
         if ckpt["optimizer"] is not None:
             optimizer.load_state_dict(ckpt["optimizer"])
