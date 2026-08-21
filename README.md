@@ -41,19 +41,31 @@ The done bar used to be "≥1 new species per game in ≥90% of games". It is **
 uniform random policy clears it 72–78% of the time, so it measured the game's generosity
 rather than the agent.
 
-**The objective has almost no headroom, and that is the project's main finding.** A catch needs
-the saucer to be armed (`0xD532 == 128`). It arms once at frame 0 and re-arms only **0.42 times
-per episode** (measured over 12 episodes; 696–12,595 frames after disarming, no trigger found),
-so **any policy gets ~1.4 catch opportunities per game.** At ~80% conversion that caps dex/game
-near 1.1–1.2, and a uniform random policy already scores 0.88.
+**A catch needs the saucer armed, and arming it is a shot the agent can take.** Catch-ready is
+exactly `wRightAlleyCount >= 2` (`0xD545`), settled from the pret/pokepinball disassembly on
+2026-08-19 and verified against the ROM: `0xD532` is `wIndicatorStates + 3`, and every site that
+writes it computes that same predicate. The count increments when the ball passes the secondary
+right alley trigger *after* the main right alley trigger — i.e. when you shoot the right ramp. It
+caps at 3, zeroes at stage init, and catch mode consumes it. Verified in lockstep over **53,205
+frames**: arm transitions and `wRightAlleyCount` increments co-occur, and the 4.7% of frames where
+the biconditional fails are all bookkeeping lag inside catch mode, which zeroes the count a few
+frames after it clears the indicator. `right_alley_count` is in the observation, and the `alley`
+stage pays for it directly.
 
-A planning agent (`tools/mpc.py`, no training) confirms it: it reaches the saucer **5.9× as
-often** as random and enters catch mode **slightly less often per frame**, because the extra
-visits land while the saucer is disarmed. Its higher dex/game is purely survival — it plays 1.8×
-longer. So **dex/game is a survival metric in disguise**: (arms per game) × 0.8, and arms accrue
-with time on the table. That is why 190M+ training steps across eight runs all read as noise.
+**This retracts the headline finding this file used to carry.** It said the objective was
+hard-capped near ~1.4 catch opportunities per game for any policy, from the saucer re-arming
+**0.42 times per episode**. Two errors stacked: 0.42 was measured at n=12 and the rate is
+**0.708 ± 0.075 at n=120**, and the quantity is not policy-invariant at all — it is a count of
+ramp shots. What is retracted is the claim that there is no headroom. How much headroom a policy
+can actually buy is not yet measured.
 
-**So train for points.** Score is ungated and dense, and it is the only objective here with room:
+A planning agent (`tools/mpc.py`, no training) reaches the saucer **5.9× as often** as random and
+enters catch mode **slightly less often per frame**; its higher dex/game is survival — it plays
+1.8× longer. That was read as confirming the cap. It is equally consistent with the cap being
+wrong, since nothing MPC does aims at the right ramp. What it does establish is the confound
+below.
+
+**Score remains the one objective measured to have moved.** It is ungated and dense:
 `score-02` measures **+2.4σ on score per 10,000 frames** (20.0M vs random's 15.2M, bootstrapped
 95% CI [+0.7M, +8.6M]) and **+2.3σ on dex/game** (1.06 vs 0.79) — the first time anything in this
 project has beaten random on the Pokédex objective, achieved by not targeting it.
