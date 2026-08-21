@@ -221,7 +221,12 @@ def parse_args():
                         "charges the equivalent of -100 and survives 1.8x longer.")
     p.add_argument("--flipper-cost", type=float, default=0.0,
                    help="per-frame cost of holding a flipper up; 0 reproduces every run so far")
-    p.add_argument("--video-every", type=int, default=250, help="updates between videos; 0=off")
+    p.add_argument(
+        "--video-every",
+        type=int,
+        default=1_000_000,
+        help="training steps between videos; 0=off",
+    )
     p.add_argument("--save-every", type=int, default=50)
     return p.parse_args()
 
@@ -439,7 +444,12 @@ def main() -> None:
 
         if args.save_every and update % args.save_every == 0:
             save_checkpoint(model, optimizer, update, run_dir / "latest.pt")
-        if args.video_every and update % args.video_every == 0:
+        crossed_video_boundary = (
+            args.video_every
+            and global_step // args.video_every
+            != (global_step - batch_size) // args.video_every
+        )
+        if crossed_video_boundary:
             # Guarded because this is the only path in the loop that boots a second PyBoy in
             # the parent process and spawns ffmpeg, and three long runs died mid-flight --
             # two of them within 16 updates of a video, with no crash report and a disproven
