@@ -13,8 +13,10 @@ anything. Deaths mid-run are cheap now -- `--resume-from runs/<name>/latest.pt`.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import functools
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -26,6 +28,8 @@ from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
 from voltorb.env import OBS_DIM, EnvConfig, PinballEnv
+from voltorb.env.rewards import make_reward
+from voltorb.train import manifest
 
 N_ACTIONS = 4
 SCREEN_H, SCREEN_W = 144, 160
@@ -151,23 +155,79 @@ def record_video(model: ActorCritic, args, path: Path, device, max_frames: int =
         env.close()
 
 
-def save_checkpoint(model, optimizer, update: int, path) -> None:
-    torch.save(
-        {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "update": update},
-        path,
-    )
+def save_checkpoint(model, optimizer, update: int, path, config: dict | None = None) -> None:
+    """Save weights, optimizer state, and -- since this format -- the config that produced
+    them.
+
+    Everything up to and including the alley runs saved `{model, optimizer, update}` and
+    nothing else, so "which config was this .pt" was archaeology through `runs/*.log`. The
+    config blob carries `args`, the resolved `EnvConfig`, and the reward kwargs actually
+    constructed, which is exactly what tools that reload a policy need in order to build a
+    matching env.
+    """
+    blob = {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "update": update}
+    if config is not None:
+        blob["config"] = config
+    torch.save(blob, path)
 
 
 def load_checkpoint(path, map_location="cpu") -> dict:
-    """Read a checkpoint in either format.
+    """Read a checkpoint in any of the three formats it has had.
 
-    Runs up to dex-03 saved a bare state_dict; newer ones save a dict with the optimizer
-    state and update counter so a mid-flight death costs minutes instead of the run.
+    1. Runs up to dex-03 saved a bare state_dict.
+    2. Then `{model, optimizer, update}`, so a mid-flight death costs minutes not the run.
+    3. Now the same plus `config`: args, EnvConfig, reward kwargs, obs_dim, stage.
+
+    `config` is absent for 1 and 2, so callers must treat it as optional forever.
     """
     blob = torch.load(path, map_location=map_location, weights_only=False)
     if isinstance(blob, dict) and "model" in blob:
+        blob.setdefault("config", None)
         return blob
-    return {"model": blob, "optimizer": None, "update": 0}
+    return {"model": blob, "optimizer": None, "update": 0, "config": None}
+
+
+def _int_tuple(s: str) -> tuple:
+    return tuple(int(x) for x in s.split(",") if x.strip())
+
+
+# Knobs that were edit-the-source-and-rerun until now. Every one takes `default=None` and is
+# only forwarded when it was actually passed, so the dataclass and reward-class defaults stay
+# the single source of truth and every earlier run reproduces byte-identically.
+ENV_KNOBS: dict[str, type] = {
+    "catch_max_frames": int,
+    "catch_launch_frames": int,
+    "shot_max_frames": int,
+    "shot_pool_size": int,
+    "shot_pool_gap": int,
+    "shot_pool_refresh": int,
+    "shot_levels": _int_tuple,
+    "shot_level_states": int,
+    "shot_ring_stride": int,
+    "shot_window": int,
+    "shot_promote": float,
+    "shot_demote": float,
+}
+
+# Reward constructor kwargs with no flag before now. Each applies only to the stages whose
+# reward class accepts it; passing one to the wrong stage fails fast in main() rather than
+# inside a spawned worker.
+REWARD_KNOBS: dict[str, type] = {
+    "height_weight": float,
+    "alive_bonus": float,
+    "score_clip": float,
+    "new_species_bonus": float,
+    "evolution_bonus": float,
+    "catch_progress_bonus": float,
+    "alley_bonus": float,
+    "alley_target": int,
+    "catch_mode_bonus": float,
+    "catch_bonus": float,
+    "progress_bonus": float,
+    "visit_bonus": float,
+    "proximity_weight": float,
+    "time_penalty": float,
+}
 
 
 def parse_args():
@@ -228,7 +288,27 @@ def parse_args():
         help="training steps between videos; 0=off",
     )
     p.add_argument("--save-every", type=int, default=50)
+    for name, kind in ENV_KNOBS.items():
+        p.add_argument(
+            f"--{name.replace('_', '-')}", type=kind, default=None,
+            help=f"EnvConfig.{name}; unset keeps the dataclass default",
+        )
+    for name, kind in REWARD_KNOBS.items():
+        p.add_argument(
+            f"--{name.replace('_', '-')}", type=kind, default=None,
+            help=f"reward kwarg {name}; unset keeps the reward class default",
+        )
     return p.parse_args()
+
+
+def _explicit_dests() -> set[str]:
+    """Which flags were actually typed. Cheap and good enough for `config_source`: argparse
+    does not record it, and reconstructing it properly means parsing twice."""
+    return {
+        tok.lstrip("-").split("=", 1)[0].replace("-", "_")
+        for tok in sys.argv[1:]
+        if tok.startswith("--")
+    }
 
 
 def main() -> None:
@@ -257,9 +337,57 @@ def main() -> None:
         if args.saucer_weight is not None:
             reward_kwargs["saucer_weight"] = args.saucer_weight
 
+    for name in REWARD_KNOBS:
+        value = getattr(args, name)
+        if value is not None:
+            reward_kwargs[name] = value
+    # Build one reward here purely to fail fast: a knob passed on a stage whose reward class
+    # does not take it would otherwise surface as a TypeError inside a spawned worker.
+    make_reward(args.stage, **reward_kwargs)
+
     env_kwargs: dict = {}
     if args.stage == "shot" and args.shot_curriculum:
         env_kwargs["shot_curriculum"] = True
+    for name in ENV_KNOBS:
+        value = getattr(args, name)
+        if value is not None:
+            env_kwargs[name] = value
+
+    env_config = EnvConfig(
+        rom_path=args.rom, frame_skip=args.frame_skip, stage=args.stage,
+        reward_kwargs=dict(reward_kwargs), **dict(env_kwargs),
+    )
+    resolved_env = dataclasses.asdict(env_config)
+    run_config = {
+        "args": vars(args),
+        "env_config": resolved_env,
+        "reward_kwargs": dict(reward_kwargs),
+        "obs_dim": OBS_DIM,
+        "stage": args.stage,
+    }
+
+    explicit = _explicit_dests()
+    flat = {f"args.{k}": v for k, v in vars(args).items()}
+    flat.update({f"env.{k}": v for k, v in resolved_env.items() if k != "reward_kwargs"})
+    flat.update({f"reward.{k}": v for k, v in reward_kwargs.items()})
+    source = {
+        key: ("explicit" if key.split(".", 1)[1] in explicit else "default") for key in flat
+    }
+    manifest_path = run_dir / "run.json"
+    manifest.write(
+        manifest_path,
+        run_id=run_name,
+        parent=args.resume_from or args.init_from,
+        config=flat,
+        config_source=source,
+        data_ref={
+            "stage": args.stage,
+            "rom_path": args.rom,
+            "rom_sha1": manifest.rom_sha1(args.rom),
+        },
+        metrics_ref={"kind": "tfevents", "path": str(run_dir)},
+        device=args.device,
+    )
 
     envs = gym.vector.AsyncVectorEnv(
         [
@@ -443,7 +571,7 @@ def main() -> None:
         print(msg, flush=True)
 
         if args.save_every and update % args.save_every == 0:
-            save_checkpoint(model, optimizer, update, run_dir / "latest.pt")
+            save_checkpoint(model, optimizer, update, run_dir / "latest.pt", run_config)
         crossed_video_boundary = (
             args.video_every
             and global_step // args.video_every
@@ -460,9 +588,12 @@ def main() -> None:
                 print(f"video capture failed at update {update}: {exc!r}", flush=True)
                 writer.add_text("video_error", f"update {update}: {exc!r}", global_step)
 
-    save_checkpoint(model, optimizer, num_updates, run_dir / "final.pt")
+    save_checkpoint(model, optimizer, num_updates, run_dir / "final.pt", run_config)
     envs.close()
     writer.close()
+    manifest.close(
+        manifest_path, status="completed", updates=num_updates, global_step=global_step
+    )
     print(f"done -> {run_dir}")
 
 
