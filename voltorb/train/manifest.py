@@ -1,58 +1,51 @@
 """`run.json` -- one manifest per run, written at launch and updated at close.
 
-A file format, not a framework. The point is that a run directory can answer "what exactly
-produced this?" without archaeology through `runs/*.log`. Metrics stay where they already
-are: `metrics_ref` points at the tfevents directory rather than copying anything.
+**The writer itself lives in `runmanifest`**, the shared package in
+`~/Dev/model-tuner` that voltorb, mimikyu and goldeneye all import
+(`uv pip install -e ~/Dev/model-tuner`). This module is voltorb's half of that
+contract: the repo root, the package list, the config namespaces, and the ROM
+hash that only this project knows how to compute. See `model-tuner/SCHEMA.md`.
 
-`verdict` is deliberately left null by the trainer. Whether a run beat, tied or lost is a
-judgement made against `tools/eval.py` afterwards, not something the training loop knows.
+The point is that a run directory can answer "what exactly produced this?"
+without archaeology through `runs/*.log`. Metrics stay where they already are:
+`metrics_ref` points at the tfevents directory rather than copying anything.
+
+`verdict` is deliberately left null by the trainer. Whether a run beat, tied or
+lost is a judgement made against `tools/eval.py` afterwards, not something the
+training loop knows -- `close()` here records only the finish *status*.
+
+**If `runmanifest` is not installed**, this degrades to a no-op with one warning
+rather than taking a training run with it.
 """
 from __future__ import annotations
 
 import hashlib
-import json
-import platform
-import subprocess
 import sys
-import time
-from importlib import metadata as _md
 from pathlib import Path
 
 PROJECT = "voltorb"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGES = ("torch", "gymnasium", "numpy", "pyboy")
+# `vars(args)` versus the resolved env dataclass versus the reward kwargs. Three
+# genuinely different namespaces, so the keys keep their prefix; the writer strips
+# it only to match a key against the command line.
+_NAMESPACES = ("args.", "env.", "reward.")
+
+try:
+    import runmanifest as _rm
+except ImportError:  # pragma: no cover - only on a checkout without the install
+    _rm = None
+
+_WRITER = (
+    _rm.ManifestWriter(PROJECT, _REPO_ROOT, packages=_PACKAGES,
+                       config_namespaces=_NAMESPACES)
+    if _rm else None
+)
 
 
-def _git(*args: str) -> str:
-    try:
-        out = subprocess.run(
-            ("git", *args), capture_output=True, text=True, timeout=10,
-            cwd=Path(__file__).resolve().parent,
-        )
-        return out.stdout.rstrip("\n") if out.returncode == 0 else ""
-    except Exception:  # noqa: BLE001 - provenance is best-effort, never fatal
-        return ""
-
-
-def _provenance(device: str) -> dict:
-    dirty = _git("status", "--porcelain")
-    return {
-        "git_sha": _git("rev-parse", "HEAD").strip(),
-        "dirty_files": [line[3:] for line in dirty.splitlines()] if dirty else [],
-        "host": platform.node(),
-        "device": device,
-        "python": platform.python_version(),
-        "package_versions": {
-            name: (_md.version(name) if _has(name) else None) for name in _PACKAGES
-        },
-    }
-
-
-def _has(name: str) -> bool:
-    try:
-        _md.version(name)
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+def _unavailable() -> None:
+    print("run manifest skipped: `runmanifest` is not installed "
+          "(uv pip install -e ~/Dev/model-tuner)", file=sys.stderr, flush=True)
 
 
 def rom_sha1(path) -> str | None:
@@ -73,45 +66,28 @@ def write(
     run_id: str,
     parent: str | None,
     config: dict,
-    config_source: dict,
     data_ref: dict,
-    metrics_ref: dict,
+    metrics_ref,
     device: str,
-) -> Path:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "id": run_id,
-                "project": PROJECT,
-                "parent": parent,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "config": config,
-                "config_source": config_source,
-                "data_ref": data_ref,
-                "provenance": _provenance(device),
-                "launch": list(sys.argv),
-                "metrics_ref": metrics_ref,
-                "verdict": None,
-            },
-            indent=2,
-            default=str,
-        )
-        + "\n"
+) -> Path | None:
+    """Write `runs/<name>/run.json`. Returns None if it could not be written."""
+    if _WRITER is None:
+        _unavailable()
+        return None
+    return _WRITER.write(
+        path,
+        run_id=run_id,
+        parent=parent,
+        config=config,
+        data_ref=data_ref,
+        metrics_ref=metrics_ref,
+        device=device,
     )
-    return path
 
 
 def close(path, *, status: str, **fields) -> None:
     """Merge finish info into an existing manifest. `verdict` stays null: it is closed by
     hand once tools/eval.py has something to say."""
-    path = Path(path)
-    try:
-        blob = json.loads(path.read_text())
-    except (OSError, ValueError):
+    if _WRITER is None:
         return
-    blob["status"] = status
-    blob["finished_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-    blob.update(fields)
-    path.write_text(json.dumps(blob, indent=2, default=str) + "\n")
+    _WRITER.finish(path, status=status, **fields)

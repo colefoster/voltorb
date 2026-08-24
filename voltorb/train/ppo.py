@@ -16,7 +16,6 @@ import argparse
 import dataclasses
 import functools
 import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -325,16 +324,6 @@ def parse_args():
     return p.parse_args()
 
 
-def _explicit_dests() -> set[str]:
-    """Which flags were actually typed. Cheap and good enough for `config_source`: argparse
-    does not record it, and reconstructing it properly means parsing twice."""
-    return {
-        tok.lstrip("-").split("=", 1)[0].replace("-", "_")
-        for tok in sys.argv[1:]
-        if tok.startswith("--")
-    }
-
-
 def main() -> None:
     args = parse_args()
     torch.manual_seed(args.seed)
@@ -390,26 +379,21 @@ def main() -> None:
         "stage": args.stage,
     }
 
-    explicit = _explicit_dests()
     flat = {f"args.{k}": v for k, v in vars(args).items()}
     flat.update({f"env.{k}": v for k, v in resolved_env.items() if k != "reward_kwargs"})
     flat.update({f"reward.{k}": v for k, v in reward_kwargs.items()})
-    source = {
-        key: ("explicit" if key.split(".", 1)[1] in explicit else "default") for key in flat
-    }
     manifest_path = run_dir / "run.json"
     manifest.write(
         manifest_path,
         run_id=run_name,
         parent=args.resume_from or args.init_from,
         config=flat,
-        config_source=source,
         data_ref={
             "stage": args.stage,
             "rom_path": args.rom,
             "rom_sha1": manifest.rom_sha1(args.rom),
         },
-        metrics_ref={"kind": "tfevents", "path": str(run_dir)},
+        metrics_ref=str(run_dir),
         device=args.device,
     )
 

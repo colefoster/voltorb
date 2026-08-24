@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
 
 import gymnasium as gym
 import numpy as np
@@ -151,6 +155,98 @@ def evaluate(checkpoint: str, args) -> dict:
     }
 
 
+# --- results file ------------------------------------------------------------
+# `--out` writes one JSON envelope shared with goldeneye/harness/eval.py (which
+# writes the same shape under GE_EVAL_OUT). Deliberately duplicated rather than
+# factored into a package: two small writers, one documented format.
+#
+#   {"project": str, "checkpoint": str, "n": int,
+#    "metrics": {<name>: {"value": float, "stderr": float|null, "n": int}},
+#    "comparison": {...}|null,   # voltorb's bootstrap; null when there is none
+#    "episodes": {<array name>: [...]},
+#    "params": {...},            # what configured the run
+#    "created_at": "...Z"}
+#
+# Extra top-level keys are project-specific: voltorb adds "checkpoints" (the
+# same metrics/episodes for every arm, since one invocation evaluates several).
+
+# The per-episode arrays evaluate() keeps under a leading underscore, and the
+# names they get on disk. These are the whole point of the file: they make the
+# bootstrap below re-runnable by anything downstream.
+_ARRAYS = {
+    "_scores": "scores",
+    "_frames": "frames",
+    "_alley": "alley_shots",
+    "_arms": "arms",
+    "_entries": "catch_entries",
+    "_dex": "dex",
+}
+
+
+def _f(x):
+    return float(x)
+
+
+def _metrics(row: dict) -> dict:
+    """Flatten a row into name -> {value, stderr, n}, pairing `*_mean` with `*_stderr`."""
+    n = int(row["n"])
+    out = {}
+    for k, v in row.items():
+        if k in ("checkpoint", "n") or k.startswith("_") or k.endswith("_stderr"):
+            continue
+        se = row.get(k[: -len("_mean")] + "_stderr") if k.endswith("_mean") else None
+        out[k] = {"value": _f(v), "stderr": None if se is None else _f(se), "n": n}
+    return out
+
+
+def _episodes(row: dict) -> dict:
+    return {name: [_f(x) for x in row[key]] for key, name in _ARRAYS.items() if key in row}
+
+
+def _rom_sha256(path: str):
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def write_results(path, rows: list, args, comparison) -> None:
+    # The envelope needs one subject; the candidate is the interesting arm and
+    # `random` is the baseline it is compared against. Every arm is still
+    # written in full under "checkpoints", so nothing is lost.
+    primary = next((r for r in rows if r["checkpoint"] != "random"), rows[0])
+    payload = {
+        "project": "voltorb",
+        "checkpoint": primary["checkpoint"],
+        "n": int(primary["n"]),
+        "metrics": _metrics(primary),
+        "comparison": comparison,
+        "episodes": _episodes(primary),
+        "params": {
+            "stage": args.stage,
+            "episodes": args.episodes,
+            "seed": args.seed,
+            "frame_skip": args.frame_skip,
+            "num_envs": args.num_envs,
+            "rom": args.rom,
+            "rom_sha256": _rom_sha256(args.rom),
+            "checkpoints": list(args.checkpoint),
+        },
+        "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "checkpoints": {
+            r["checkpoint"]: {
+                "n": int(r["n"]),
+                "metrics": _metrics(r),
+                "episodes": _episodes(r),
+            }
+            for r in rows
+        },
+    }
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", action="append", required=True,
@@ -163,6 +259,7 @@ def main() -> None:
     ap.add_argument("--num-envs", type=int, default=8)
     ap.add_argument("--frame-skip", type=int, default=1)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--out", help="write the results envelope here as JSON")
     args = ap.parse_args()
 
     rows = [evaluate(c, args) for c in args.checkpoint]
@@ -187,8 +284,20 @@ def main() -> None:
             f"{r['dex_hit_rate']:6.0f}%"
         )
 
+    comparison = None
     base = next((r for r in rows if r["checkpoint"] == "random"), None)
     if base and len(rows) > 1:
+        # Collected as it prints, not recomputed: the bootstrap draws from one
+        # rng in print order, so a second pass would not reproduce these numbers.
+        comparison = {
+            "baseline": base["checkpoint"],
+            "method": "bootstrap ratio of sums, resampling episodes",
+            "n_boot": 4000,
+            "seed": 0,
+            "ci": 95,
+            "metrics": {},
+            "per_episode_mean": {},
+        }
         rng = np.random.default_rng(0)
         n_boot = 4000
 
@@ -199,15 +308,16 @@ def main() -> None:
             idx = rng.integers(0, len(num), size=(n_boot, len(num)))
             return num[idx].sum(1) / fr[idx].sum(1) * 10_000.0
 
-        for label, key, fmt in (
-            ("score per 10k frames", "_scores", ",.0f"),
-            ("ramp shots per 10k frames", "_alley", ".3f"),
-            ("arms per 10k frames", "_arms", ".3f"),
-            ("catch entries per 10k frames", "_entries", ".3f"),
-            ("dex per 10k frames", "_dex", ".3f"),
+        for metric, label, key, fmt in (
+            ("score_rate", "score per 10k frames", "_scores", ",.0f"),
+            ("alley_rate", "ramp shots per 10k frames", "_alley", ".3f"),
+            ("arms_rate", "arms per 10k frames", "_arms", ".3f"),
+            ("entry_rate", "catch entries per 10k frames", "_entries", ".3f"),
+            ("dex_rate", "dex per 10k frames", "_dex", ".3f"),
         ):
             b_base = boot_rate(base, key)
             print(f"\nvs random ({label}, bootstrapped over episodes):")
+            comparison["metrics"][metric] = {"label": label, "checkpoints": {}}
             for r in rows:
                 if r is base:
                     continue
@@ -215,6 +325,13 @@ def main() -> None:
                 lo, hi = np.percentile(diff, [2.5, 97.5])
                 z = diff.mean() / diff.std() if diff.std() else 0.0
                 verdict = "significant" if lo > 0 or hi < 0 else "NOT distinguishable from random"
+                comparison["metrics"][metric]["checkpoints"][r["checkpoint"]] = {
+                    "mean": float(diff.mean()),
+                    "lo": float(lo),
+                    "hi": float(hi),
+                    "sigma": float(z),
+                    "significant": bool(lo > 0 or hi < 0),
+                }
                 print(f"  {short(r['checkpoint']):26s} {diff.mean():+{fmt}} "
                       f"[95% CI {lo:+{fmt}}, {hi:+{fmt}}] = {z:+.1f} sigma  ({verdict})")
         # Per-EPISODE counts below. These are reported only because the ledger's older entries
@@ -227,6 +344,7 @@ def main() -> None:
             ("dex/game", "dex_mean", "dex_stderr"),
         ):
             print(f"\nvs random ({label}, in standard errors):")
+            comparison["per_episode_mean"][mean_key] = {"label": label, "checkpoints": {}}
             for r in rows:
                 if r is base:
                     continue
@@ -234,8 +352,17 @@ def main() -> None:
                 se = float(np.hypot(r[se_key], base[se_key]))
                 sigma = diff / se if se else 0.0
                 verdict = "significant" if abs(sigma) >= 2 else "NOT distinguishable from random"
+                comparison["per_episode_mean"][mean_key]["checkpoints"][r["checkpoint"]] = {
+                    "mean": float(diff),
+                    "stderr": se,
+                    "sigma": float(sigma),
+                    "significant": bool(abs(sigma) >= 2),
+                }
                 print(f"  {short(r['checkpoint']):26s} "
                       f"{diff:+.2f} = {sigma:+.1f} sigma  ({verdict})")
+
+    if args.out:
+        write_results(args.out, rows, args, comparison)
 
 
 if __name__ == "__main__":
